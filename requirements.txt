@@ -1,2 +1,7 @@
-streamlit>=1.40,<2.0
- 
+streamlit>=1.59,<2.0
+langchain
+pandas
+langchain_text_splitters
+langchain_openai
+python-dotenv
+langchain_qdrant
