@@ -7,4 +7,4 @@ from langchain_openai import OpenAIEmbeddings
 load_dotenv()
 
 EMBEDDING = OpenAIEmbeddings(model=os.environ["LLM_EMBEDDING_MODEL"])
-LLM_MODEL = init_chat_model(model=os.environ["LLM_INFERENCE_MODEL"])
+LLM_MODEL = init_chat_model(model=os.environ["LLM_INFERENCE_MODEL"], temperature=0)
