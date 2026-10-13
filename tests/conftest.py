@@ -9,6 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from pydantic import Field
@@ -105,3 +106,35 @@ def make_fake_llm(*replies: str | Exception) -> RecordingFakeChatModel:
 def fake_llm():
     """Fixture pabrik LLM palsu: ``fake_llm("balasan 1", "balasan 2", ...)``."""
     return make_fake_llm
+
+
+class FakeVectorStore:
+    """Stub vector store dengan antarmuka ``similarity_search_with_score`` milik Qdrant.
+
+    Tidak memakai embedding: skor setiap chunk ditentukan langsung oleh test.
+    Filter ``MatchAny`` pada ``metadata.job_id`` diterapkan seperti Qdrant,
+    dan setiap pemanggilan dicatat di ``calls`` untuk diperiksa test.
+    """
+
+    def __init__(self, chunks: list[tuple[int, str, float]]):
+        self.chunks = chunks
+        self.calls: list[dict] = []
+
+    def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
+        self.calls.append({"query": query, "k": k, "filter": filter})
+        allowed = None
+        if filter is not None:
+            allowed = set(filter.must[0].match.any)
+        hits = [
+            (Document(page_content=text, metadata={"job_id": job_id}), score)
+            for job_id, text, score in self.chunks
+            if allowed is None or job_id in allowed
+        ]
+        hits.sort(key=lambda hit: hit[1], reverse=True)
+        return hits[:k]
+
+
+@pytest.fixture
+def fake_vector_store():
+    """Fixture pabrik stub: ``fake_vector_store([(job_id, teks, skor), ...])``."""
+    return FakeVectorStore

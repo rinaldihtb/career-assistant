@@ -35,3 +35,6 @@ sample-sql:
 
 sample-sql-llm:
 	PYTHONPATH=.:src $(PYTHON) -m agents.sql_sample --llm
+
+sample-rag:
+	PYTHONPATH=.:src $(PYTHON) -m agents.rag_sample
