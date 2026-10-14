@@ -11,4 +11,5 @@ def render_navigation() -> None:
         # st.divider()
         st.page_link("pages/home.page.py", label="Home")
         st.page_link("pages/jobsearch.page.py", label="Search Job")
+        st.page_link("pages/assistant.page.py", label="Career Assistant")
         st.page_link("pages/jobsearch.page.py", label="Sign in / Sign up")

@@ -1,0 +1,5 @@
+src = [".", "src"]
+line-length = 100
+
+[lint]
+extend-select = ["I", "SIM", "ISC"]
