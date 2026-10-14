@@ -1,15 +1,19 @@
-"""RAG agent: mencari lowongan yang relevan dengan pertanyaan pengguna.
+"""RAG agent: mencari lowongan yang relevan lalu menjawab dengan sitasi [ID:x].
 
-Tahap 4 (isi file saat ini): retrieval, tanpa LLM chat.
-    1. Deteksi lokasi tanpa LLM: kamus nama tempat dari kolom ``location`` SQLite.
-    2. Qdrant ``k`` chunk; jika ada lokasi, difilter ``metadata.job_id`` (MatchAny)
-       dan nama tempat dibuang dari teks yang di-embed.
-    3. Buang chunk sangat pendek, dedupe per ``job_id`` (chunk skor tertinggi),
-       buang skor < threshold (hanya jika TIDAK ada filter lokasi), ambil ``top_n``.
-    4. Detail lowongan dari SQLite berdasarkan ID.
+Alur ``run_rag_agent`` (0 atau 1 panggilan LLM chat):
+    1. ``retrieve_jobs`` (tanpa LLM chat, hanya embedding query):
+       a. Deteksi lokasi dengan kamus nama tempat dari kolom ``location`` SQLite.
+       b. Qdrant ``k`` chunk; jika ada lokasi, difilter ``metadata.job_id`` (MatchAny)
+          dan nama tempat dibuang dari teks yang di-embed.
+       c. Buang chunk sangat pendek, dedupe per ``job_id`` (chunk skor tertinggi),
+          buang skor < threshold (hanya jika TIDAK ada filter lokasi), ambil ``top_n``.
+       d. Detail lowongan dari SQLite berdasarkan ID.
+    2. Tanpa kandidat: pesan tetap, 0 panggilan LLM.
+    3. ``answer_from_jobs``: satu panggilan LLM menjawab dari kandidat, lalu guard
+       sitasi tanpa LLM menyaring ID yang dikutip.
 
-Tahap 5 menambahkan ``run_rag_agent``: satu panggilan LLM untuk menjawab dan
-guard sitasi [ID:x] tanpa LLM.
+``retrieve_jobs`` dan ``answer_from_jobs`` sengaja dipisah agar fitur lain
+(misalnya Cocokkan CV) bisa memakai retrieval yang sama dengan langkah jawab berbeda.
 """
 
 import re
@@ -17,24 +21,40 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.vectorstores import VectorStore
 from pydantic import BaseModel, Field
 from qdrant_client import models
 
+from agents.prompts import (
+    RAG_ANSWER_SYSTEM,
+    RAG_ANSWER_USER,
+    RAG_FAILED_MESSAGE,
+    RAG_JOB_TEMPLATE,
+    RAG_NO_CANDIDATE_MESSAGE,
+)
+from models.agent import AgentResult, LLMUsage
 from repositories.job_repository import get_job_locations, get_jobs_by_ids
 
 DEFAULT_TOP_N = 5
 DEFAULT_CANDIDATE_K = 20  # chunk yang diambil dari Qdrant sebelum dedupe per lowongan
 # Hanya berlaku untuk pertanyaan TANPA lokasi. Smoke test 2 (12 Okt): top-1 relevan
 # 0,64-0,72, terlemah yang relevan 0,497; di luar topik maks 0,444; "pilot" 0,452.
-# Sengaja tidak dinaikkan ke 0,46 hanya demi satu titik data; LLM di Tahap 5
-# adalah lapisan kedua yang menolak lowongan tidak relevan.
+# Sengaja tidak dinaikkan ke 0,46 hanya demi satu titik data; LLM di
+# answer_from_jobs adalah lapisan kedua yang menolak lowongan tidak relevan.
 DEFAULT_SCORE_THRESHOLD = 0.45
 # Chunk lebih pendek dari ini hampir selalu judul bagian ("About the role",
 # "Deskripsi Pekerjaan"): 73 dari 3.613 chunk. Isinya generik sehingga mirip
 # dengan pertanyaan apa pun yang mengandung kata "lowongan".
 MIN_CHUNK_CHARS = 40
 JOB_ID_METADATA_KEY = "metadata.job_id"  # payload langchain_qdrant: {"metadata": {...}}
+# Deskripsi lowongan rata-rata jauh lebih panjang; 800 karakter pertama biasanya
+# sudah memuat ringkasan posisi. Bersama matched_chunk (bagian yang paling cocok)
+# ini cukup untuk menilai relevansi dengan token kecil: 5 kandidat ~1.500 token.
+MAX_DESCRIPTION_CHARS = 800
+# Longgar terhadap variasi penulisan LLM: "[ID:12]", "[ID: 12]", "[ID:12, ID:15]".
+_CITATION = re.compile(r"\bID:\s*(\d+)", re.IGNORECASE)
 
 # Kata yang dibuang dari nama tempat untuk membuat alias pendek, misalnya
 # "Jakarta Selatan" -> "jakarta", "Kabupaten Bogor" -> "bogor",
@@ -178,6 +198,151 @@ def build_job_id_filter(job_ids: Iterable[int]) -> models.Filter:
     )
 
 
+# --- Entry point -------------------------------------------------------------
+
+
+def run_rag_agent(
+    question: str,
+    *,
+    llm: BaseChatModel,
+    vector_store: VectorStore,
+    db_path: str | Path,
+    top_n: int = DEFAULT_TOP_N,
+) -> AgentResult:
+    """Cari lowongan yang relevan dan jawab pertanyaan dengan sitasi [ID:x].
+
+    Jumlah panggilan LLM chat:
+        - ada kandidat: 1
+        - tidak ada kandidat (semua di bawah threshold): 0, jawaban pesan tetap
+        - retrieval gagal (Qdrant, embedding, SQLite): 0, jawaban pesan tetap
+
+    Args:
+        question: Pertanyaan mandiri dari supervisor.
+        llm: Chat model yang disuntikkan (asli atau palsu saat test).
+        vector_store: Vector store yang disuntikkan (``QdrantVectorStore`` atau stub).
+        db_path: Path ke file SQLite.
+        top_n: Jumlah kandidat maksimal yang dikirim ke LLM.
+
+    Returns:
+        ``AgentResult`` dengan ``source="rag"``. ``job_ids`` dan ``rows`` hanya
+        berisi lowongan yang dikutip LLM DAN memang ada di kandidat. Fungsi ini
+        tidak pernah melempar exception; kegagalan dicatat di ``error``.
+    """
+    try:
+        retrieval = retrieve_jobs(question, vector_store=vector_store, db_path=db_path, top_n=top_n)
+    except Exception as exc:  # noqa: BLE001 - kontrak: agent tidak pernah melempar exception
+        return AgentResult(answer=RAG_FAILED_MESSAGE, source="rag", error=f"Retrieval error: {exc}")
+
+    if not retrieval.jobs:
+        return AgentResult(answer=RAG_NO_CANDIDATE_MESSAGE, source="rag")
+
+    return answer_from_jobs(question, retrieval.jobs, llm=llm)
+
+
+# --- Jawaban dengan LLM ------------------------------------------------------
+
+
+def answer_from_jobs(
+    question: str, jobs: list[dict[str, Any]], *, llm: BaseChatModel
+) -> AgentResult:
+    """Satu panggilan LLM menjawab dari kandidat, lalu guard sitasi tanpa LLM.
+
+    Kenapa guard di Python, bukan meminta LLM mengembalikan JSON daftar ID:
+    jawaban teks dan ID yang dikutip tidak mungkin berbeda karena ID diambil
+    langsung dari teks jawaban. Tidak perlu panggilan kedua untuk verifikasi.
+
+    Args:
+        question: Pertanyaan mandiri.
+        jobs: Kandidat dari ``retrieve_jobs`` (dict kolom lowongan + ``matched_chunk``).
+        llm: Chat model.
+
+    Returns:
+        ``AgentResult`` dengan ``source="rag"``. Tidak pernah melempar exception.
+    """
+    usage = LLMUsage()
+    user_prompt = RAG_ANSWER_USER.format(
+        question=question, count=len(jobs), jobs="\n\n".join(map(format_job_for_prompt, jobs))
+    )
+    try:
+        response = llm.invoke([SystemMessage(RAG_ANSWER_SYSTEM), HumanMessage(user_prompt)])
+    except Exception as exc:  # noqa: BLE001 - tipe error provider LLM sangat beragam
+        return AgentResult(
+            answer=RAG_FAILED_MESSAGE, source="rag", usage=usage, error=f"LLM error: {exc}"
+        )
+    usage.add(response)
+    answer = response.text
+
+    valid_ids, invalid_ids = check_citations(answer, [job["id"] for job in jobs])
+    jobs_by_id = {job["id"]: job for job in jobs}
+    return AgentResult(
+        answer=answer,
+        source="rag",
+        job_ids=valid_ids,
+        rows=[jobs_by_id[job_id] for job_id in valid_ids],
+        usage=usage,
+        error=f"ID di luar kandidat dibuang: {invalid_ids}" if invalid_ids else None,
+    )
+
+
+def check_citations(answer: str, candidate_ids: Iterable[int]) -> tuple[list[int], list[int]]:
+    """Pisahkan ID yang dikutip jawaban menjadi valid (ada di kandidat) dan palsu.
+
+    Guard ini mencegah UI menampilkan kartu lowongan yang tidak pernah dilihat
+    LLM (ID halusinasi). Jawaban teks sengaja tidak diubah: dengan temperature 0
+    dan ID tertulis jelas di prompt, ID palsu jarang terjadi, dan jika terjadi
+    dicatat di ``AgentResult.error`` untuk dievaluasi.
+
+    Returns:
+        ``(valid, invalid)``, masing-masing urut kemunculan pertama di jawaban
+        dan tanpa duplikat.
+    """
+    candidates = set(candidate_ids)
+    cited = list(dict.fromkeys(int(match) for match in _CITATION.findall(answer)))
+    valid = [job_id for job_id in cited if job_id in candidates]
+    invalid = [job_id for job_id in cited if job_id not in candidates]
+    return valid, invalid
+
+
+def format_job_for_prompt(job: dict[str, Any]) -> str:
+    """Ubah satu kandidat menjadi blok ``<job id="...">`` untuk prompt.
+
+    Teks ``</job>`` di dalam data dinetralkan agar deskripsi lowongan tidak
+    bisa menutup tag lebih awal dan menyisipkan teks di luar blok data.
+    """
+    description = job.get("job_description") or ""
+    if len(description) > MAX_DESCRIPTION_CHARS:
+        description = f"{description[:MAX_DESCRIPTION_CHARS]}..."
+    fields = {
+        "job_title": job.get("job_title") or "-",
+        "company_name": job.get("company_name") or "-",
+        "location": " ".join((job.get("location") or "-").split()),
+        "work_type": job.get("work_type") or "-",
+        "salary": format_salary(job.get("salary_min"), job.get("salary_max")),
+        "matched_chunk": " ".join((job.get("matched_chunk") or "-").split()),
+        "description": " ".join(description.split()) or "-",
+    }
+    safe = {key: value.replace("</job>", "</ job>") for key, value in fields.items()}
+    return RAG_JOB_TEMPLATE.format(id=job["id"], **safe)
+
+
+def format_salary(salary_min: int | None, salary_max: int | None) -> str:
+    """Format gaji Rupiah per bulan; ``"tidak dicantumkan"`` jika kosong.
+
+    Contoh: ``(8_000_000, 10_000_000)`` -> ``"Rp8.000.000 - Rp10.000.000 per bulan"``.
+    Teks eksplisit "tidak dicantumkan" lebih aman daripada menghapus baris Gaji:
+    LLM tidak tergoda menebak angka.
+    """
+
+    def rupiah(value: int) -> str:
+        return f"Rp{value:,}".replace(",", ".")
+
+    if not salary_min and not salary_max:
+        return "tidak dicantumkan"
+    if salary_min and salary_max and salary_min != salary_max:
+        return f"{rupiah(salary_min)} - {rupiah(salary_max)} per bulan"
+    return f"{rupiah(salary_min or salary_max)} per bulan"
+
+
 # --- Retrieval ---------------------------------------------------------------
 
 
@@ -207,15 +372,16 @@ def retrieve_jobs(
             Diabaikan jika filter lokasi aktif: pertanyaan seperti "ada lowongan
             apa di Bali?" tidak punya topik untuk dicocokkan, sehingga skornya
             rendah (smoke test: maks 0,448) walaupun semua kandidat valid.
-            Kandidat sudah dipersempit filter; relevansi dinilai LLM di Tahap 5.
+            Kandidat sudah dipersempit filter; relevansi dinilai LLM di
+            ``answer_from_jobs``.
 
     Returns:
         ``RetrievalResult``. ``jobs`` kosong berarti tidak ada lowongan relevan.
 
     Raises:
         Exception: Error Qdrant, embedding, atau SQLite diteruskan apa adanya.
-            ``run_rag_agent`` (Tahap 5) yang menangkapnya agar kontrak
-            "tidak pernah melempar exception" tetap terjaga.
+            ``run_rag_agent`` yang menangkapnya agar kontrak "tidak pernah
+            melempar exception" tetap terjaga.
     """
     place_index = build_place_index(get_job_locations(db_path))
     places = detect_places(question, place_index)
