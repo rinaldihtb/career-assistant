@@ -106,10 +106,10 @@ Aturan yang dijamin oleh setiap `run_*` (termasuk `run_supervisor`):
 |---|---|
 | `answer` | Teks untuk ditampilkan ke user |
 | `source` | `"sql"`, `"rag"`, atau `"general"` (pesan tetap supervisor) |
-| `job_ids` | ID lowongan terkait (untuk kartu lowongan di UI) |
-| `rows` | Data mentah (hasil query / lowongan yang dikutip) |
+| `job_ids` | ID lowongan terkait (untuk kartu lowongan di UI). SQL: hanya terisi jika query memilih kolom `id` |
+| `rows` | RAG: dict lowongan yang dikutip (kolom `jobs` + `score`, `matched_chunk`). SQL: baris hasil query dengan kolom bebas, bisa agregat tanpa `id`. UI wajib cek `source` sebelum menampilkan |
 | `sql` | Query yang dieksekusi (SQL agent saja) |
-| `usage` | `llm_calls`, `input_tokens`, `output_tokens`, `total_tokens` |
+| `usage` | Total `llm_calls`, `input_tokens`, `output_tokens`, `total_tokens`, plus `calls`: rincian per panggilan (langkah, model, token) |
 | `error` | `None` jika sukses |
 
 Jumlah panggilan LLM SQL agent: 2 normal, 3 jika retry, 1 jika hasil kosong

@@ -44,6 +44,7 @@ def test_success_uses_one_llm_call_and_keeps_cited_jobs(jobs_db, fake_llm, fake_
     assert result.error is None
     assert result.usage.llm_calls == 1
     assert result.usage.total_tokens == 15
+    assert [call.step for call in result.usage.calls] == ["rag_answer"]
 
 
 def test_uncited_candidates_are_not_returned(jobs_db, fake_llm, fake_vector_store):

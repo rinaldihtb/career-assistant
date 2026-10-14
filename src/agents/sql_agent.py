@@ -104,6 +104,7 @@ def run_sql_agent(
                 rows=_format_rows_for_prompt(rows),
             ),
             usage,
+            step="sql_answer",
         )
     except LLMCallError as exc:
         return AgentResult(answer=SQL_FAILED_MESSAGE, source="sql", usage=usage, error=str(exc))
@@ -166,16 +167,17 @@ def generate_sql(
             question=question, previous_sql=previous_sql or "-", error=error
         )
     system_prompt = SQL_GENERATION_SYSTEM.format(max_rows=max_rows)
-    return extract_sql(_call_llm(llm, system_prompt, user_prompt, usage))
+    step = "sql_generate" if error is None else "sql_retry"
+    return extract_sql(_call_llm(llm, system_prompt, user_prompt, usage, step=step))
 
 
-def _call_llm(llm: BaseChatModel, system: str, user: str, usage: LLMUsage) -> str:
-    """Satu panggilan LLM: catat token dan seragamkan semua error provider."""
+def _call_llm(llm: BaseChatModel, system: str, user: str, usage: LLMUsage, *, step: str) -> str:
+    """Satu panggilan LLM: catat token per langkah dan seragamkan semua error provider."""
     try:
         response = llm.invoke([SystemMessage(system), HumanMessage(user)])
     except Exception as exc:  # tipe error provider LLM sangat beragam
         raise LLMCallError(f"LLM error: {exc}") from exc
-    usage.add(response)
+    usage.add(response, step=step)
     return response.text
 
 

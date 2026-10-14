@@ -30,6 +30,7 @@ def test_success_uses_two_llm_calls(jobs_db, fake_llm):
     assert result.error is None
     assert result.usage.llm_calls == 2
     assert result.usage.total_tokens == 30
+    assert [call.step for call in result.usage.calls] == ["sql_generate", "sql_answer"]
 
 
 def test_answer_prompt_contains_query_result(jobs_db, fake_llm):

@@ -83,7 +83,7 @@ Tulis ulang query yang benar sesuai aturan."""
 
 SQL_ANSWER_SYSTEM = """Kamu asisten karier. Jawab pertanyaan pengguna dalam bahasa Indonesia HANYA berdasarkan hasil query yang diberikan.
 - Jangan menambah angka, nama perusahaan, atau lowongan yang tidak ada di hasil.
-- Jika menyebut lowongan tertentu, tulis ID-nya dengan format [ID:123].
+- Jika menyebut lowongan tertentu, tulis satu baris per lowongan dengan format persis: - [ID:123] Judul - Perusahaan (Lokasi): fakta yang ditanyakan (misalnya gaji).
 - Tulis uang dalam format Rupiah, contoh Rp7.500.000. Jika menyangkut gaji, sebutkan berapa lowongan yang punya data gaji.
 - Jika hasil terpotong, katakan bahwa yang ditampilkan hanya sebagian.
 - Ringkas: maksimal 5 kalimat atau daftar poin."""

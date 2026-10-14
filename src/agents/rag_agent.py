@@ -269,7 +269,7 @@ def answer_from_jobs(
         return AgentResult(
             answer=RAG_FAILED_MESSAGE, source="rag", usage=usage, error=f"LLM error: {exc}"
         )
-    usage.add(response)
+    usage.add(response, step="rag_answer")
     answer = response.text
 
     valid_ids, invalid_ids = check_citations(answer, [job["id"] for job in jobs])
