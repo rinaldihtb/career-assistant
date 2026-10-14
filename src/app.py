@@ -21,5 +21,11 @@ job_search_page = st.Page(
     icon="🔎",
 )
 
-navigation = st.navigation([home_page, job_search_page], position="hidden")
+assistant_page = st.Page(
+    "pages/assistant.page.py",
+    title="Asisten Karier",
+    icon="💬",
+)
+
+navigation = st.navigation([home_page, job_search_page, assistant_page], position="hidden")
 navigation.run()

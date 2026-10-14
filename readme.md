@@ -36,6 +36,8 @@ Perintah lain: `make help`.
 | `src/agents/rag_agent.py` | RAG agent: pencarian lowongan dengan sitasi `[ID:x]` |
 | `src/agents/supervisor_agent.py` | Supervisor LangGraph: router + memanggil agent |
 | `src/agents/*_sample.py` | Smoke test manual terhadap data dan LLM asli |
+| `src/components/assistant_chat.py` | Halaman chat Asisten Karier (memanggil `run_supervisor`) |
+| `src/components/job_description.py` | Merapikan deskripsi lowongan ke bagian baku, tanpa LLM |
 
 Nama file Python wajib memakai underscore (`job_repository.py`), bukan titik, agar bisa di-import.
 
