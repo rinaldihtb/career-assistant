@@ -55,3 +55,8 @@ sample-supervisor:
 
 supervisor-graph:
 	PYTHONPATH=.:src $(PYTHON) -m agents.supervisor_sample --graph
+
+.PHONY: eval
+
+eval:
+	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_eval $(ARGS)

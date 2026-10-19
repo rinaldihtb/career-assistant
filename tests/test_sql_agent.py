@@ -1,16 +1,18 @@
 """SQL agent lengkap dengan LLM palsu (gratis, tanpa API key)."""
 
+import re
 import sqlite3
 from contextlib import closing
 
 from agents.prompts import (
+    SQL_ANSWER_SYSTEM,
     SQL_EMPTY_RESULT_MESSAGE,
     SQL_FAILED_MESSAGE,
     SQL_GENERATION_SYSTEM,
     SQL_NOT_RELEVANT_MESSAGE,
     SQL_NOT_RELEVANT_TOKEN,
 )
-from agents.sql_agent import run_sql_agent
+from agents.sql_agent import execute_sql, run_sql_agent, strip_invalid_citations, validate_sql
 
 
 def _sql_block(sql: str) -> str:
@@ -143,3 +145,39 @@ def test_long_text_is_truncated_only_in_prompt(jobs_db, fake_llm):
     answer_prompt = llm.received[1][-1].content
     assert "0" * 201 not in answer_prompt
     assert len(result.rows[0]["teks"]) == 600
+
+
+# --- Guard sitasi dan contoh di prompt ---------------------------------------
+
+
+def test_citation_not_in_query_result_is_removed(jobs_db, fake_llm):
+    llm = fake_llm(
+        _sql_block("SELECT salary_min, salary_max FROM jobs WHERE id = 1"),
+        "- [ID:123] Data Analyst - PT Alpha (Jakarta): Rp8.000.000 - Rp10.000.000",
+    )
+    result = run_sql_agent("Gaji lowongan dengan ID 1?", llm=llm, db_path=jobs_db)
+
+    assert result.answer == "- Data Analyst - PT Alpha (Jakarta): Rp8.000.000 - Rp10.000.000"
+    assert result.job_ids == []
+    assert result.error == "ID di luar hasil query dibuang: [123]"
+
+
+def test_strip_invalid_citations_keeps_valid_ids():
+    answer = "- [ID:1] A\n- [ID: 9] B\n- [ID:2] C\n[ID:9] lagi"
+    cleaned, invalid = strip_invalid_citations(answer, [1, 2])
+
+    assert cleaned == "- [ID:1] A\n- B\n- [ID:2] C\nlagi"
+    assert invalid == [9]
+
+
+def test_answer_prompt_has_no_numeric_example_id():
+    assert not re.search(r"\[ID:\s*\d+\]", SQL_ANSWER_SYSTEM)
+
+
+def test_generation_prompt_examples_run_on_database(jobs_db):
+    """Contoh query di prompt harus valid: LLM meniru contoh apa adanya."""
+    examples = re.findall(r"```sql\n(.*?)\n```", SQL_GENERATION_SYSTEM, re.DOTALL)
+
+    assert len(examples) == 4
+    for sql in examples:
+        execute_sql(validate_sql(sql), jobs_db)

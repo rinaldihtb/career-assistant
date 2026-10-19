@@ -1,7 +1,7 @@
 """SQL agent: menjawab pertanyaan statistik lowongan dengan query SQLite.
 
 Alur: LLM menulis SQL -> validasi -> eksekusi read-only -> (retry 1x jika gagal)
--> LLM merangkum hasil. Jumlah panggilan LLM selalu 1 sampai 3.
+-> LLM merangkum hasil -> guard sitasi (tanpa LLM). Jumlah panggilan LLM selalu 1 sampai 3.
 """
 
 import json
@@ -38,6 +38,7 @@ _CODE_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _STARTS_WITH_SELECT = re.compile(r"^(select|with)\b", re.IGNORECASE)
 _TRAILING_LIMIT = re.compile(r"\blimit\s+\d+(\s*(,|offset)\s*\d+)?\s*$", re.IGNORECASE)
+_CITATION_TAG = re.compile(r"\[ID:\s*(\d+)\]\s*", re.IGNORECASE)
 
 
 class UnsafeSQLError(ValueError):
@@ -109,13 +110,16 @@ def run_sql_agent(
     except LLMCallError as exc:
         return AgentResult(answer=SQL_FAILED_MESSAGE, source="sql", usage=usage, error=str(exc))
 
+    job_ids = [r["id"] for r in rows if isinstance(r.get("id"), int)]
+    answer, invalid_ids = strip_invalid_citations(answer, job_ids)
     return AgentResult(
         answer=answer,
         source="sql",
-        job_ids=[r["id"] for r in rows if isinstance(r.get("id"), int)],
+        job_ids=job_ids,
         sql=sql,
         rows=rows,
         usage=usage,
+        error=f"ID di luar hasil query dibuang: {invalid_ids}" if invalid_ids else None,
     )
 
 
@@ -200,6 +204,30 @@ def _format_rows_for_prompt(rows: list[dict[str, Any]]) -> str:
         }
         lines.append(json.dumps(short, ensure_ascii=False, default=str))
     return "\n".join(lines)
+
+
+def strip_invalid_citations(answer: str, valid_ids: list[int]) -> tuple[str, list[int]]:
+    """Buang tag ``[ID:x]`` yang ID-nya tidak ada di hasil query; teks lainnya tetap.
+
+    Kenapa hanya tag yang dibuang, bukan barisnya: pada baseline eval, baris dengan
+    ID palsu tetap memuat fakta yang benar (misalnya gaji), hanya ID-nya yang
+    dikarang. Tanpa tag, UI tidak membuat kartu untuk lowongan yang salah.
+
+    Returns:
+        ``(jawaban_bersih, id_yang_dibuang)``; daftar ID urut kemunculan, tanpa duplikat.
+    """
+    valid = set(valid_ids)
+    invalid: list[int] = []
+
+    def _check(match: re.Match[str]) -> str:
+        job_id = int(match.group(1))
+        if job_id in valid:
+            return match.group(0)
+        invalid.append(job_id)
+        return ""
+
+    cleaned = _CITATION_TAG.sub(_check, answer)
+    return cleaned, list(dict.fromkeys(invalid))
 
 
 def extract_sql(text: str) -> str:
