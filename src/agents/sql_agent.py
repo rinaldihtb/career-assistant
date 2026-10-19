@@ -1,6 +1,7 @@
 """SQL agent: menjawab pertanyaan statistik lowongan dengan query SQLite.
 
-Alur: LLM menulis SQL -> validasi -> eksekusi read-only -> (retry 1x jika gagal)
+Alur: LLM menulis SQL -> validasi -> stem pola judul (tanpa LLM) -> eksekusi read-only
+-> (retry 1x jika gagal)
 -> LLM merangkum hasil -> guard sitasi (tanpa LLM). Jumlah panggilan LLM selalu 1 sampai 3.
 """
 
@@ -22,9 +23,11 @@ from agents.prompts import (
     SQL_FAILED_MESSAGE,
     SQL_GENERATION_SYSTEM,
     SQL_GENERATION_USER,
+    SQL_NO_SALARY_NOTE,
     SQL_NOT_RELEVANT_MESSAGE,
     SQL_NOT_RELEVANT_TOKEN,
     SQL_RETRY_USER,
+    SQL_TRUNCATED_NOTE,
 )
 from models.agent import AgentResult, LLMUsage
 from repositories.job_repository import connect_readonly
@@ -39,6 +42,15 @@ _COMMENT = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 _STARTS_WITH_SELECT = re.compile(r"^(select|with)\b", re.IGNORECASE)
 _TRAILING_LIMIT = re.compile(r"\blimit\s+\d+(\s*(,|offset)\s*\d+)?\s*$", re.IGNORECASE)
 _CITATION_TAG = re.compile(r"\[ID:\s*(\d+)\]\s*", re.IGNORECASE)
+# Kalimat jumlah lowongan tanpa gaji yang tetap ditulis LLM; dibuang lalu diganti versi kode.
+_NO_SALARY_SENTENCE = re.compile(
+    r"[ \t]*\d+\s+lowongan lain tidak mencantumkan gaji\.?", re.IGNORECASE
+)
+_TITLE_PATTERN = re.compile(r"(lower\(\s*job_title\s*\)\s+LIKE\s+')([^']*)(')", re.IGNORECASE)
+# Akhiran pelaku dipotong ke kata dasarnya: '%design%' juga mencocokkan "Designer",
+# tetapi '%designer%' tidak mencocokkan "Graphic Design" (eval b3-sql, T11-03).
+_TITLE_STEMS = {"designer": "design", "desainer": "desain"}
+_TITLE_STEM_WORD = re.compile(r"\b(" + "|".join(_TITLE_STEMS) + r")\b")
 
 
 class UnsafeSQLError(ValueError):
@@ -72,6 +84,10 @@ def run_sql_agent(
         - hasil query kosong: 1, jawaban pesan tetap
         - pertanyaan tidak relevan / minta ubah data: 1, jawaban pesan tetap
 
+    Fakta yang sudah pasti di hasil query (baris lowongan yang tidak dikutip,
+    jumlah lowongan tanpa gaji, hasil terpotong) ditambahkan oleh kode lewat
+    ``finalize_answer``, bukan ditulis LLM.
+
     Args:
         question: Pertanyaan pengguna.
         llm: Chat model yang disuntikkan (asli atau palsu saat test).
@@ -101,7 +117,6 @@ def run_sql_agent(
                 question=question,
                 sql=sql,
                 row_count=len(rows),
-                truncated_note=", mungkin terpotong" if len(rows) >= max_rows else "",
                 rows=_format_rows_for_prompt(rows),
             ),
             usage,
@@ -112,6 +127,7 @@ def run_sql_agent(
 
     job_ids = [r["id"] for r in rows if isinstance(r.get("id"), int)]
     answer, invalid_ids = strip_invalid_citations(answer, job_ids)
+    answer = finalize_answer(answer, rows, max_rows)
     return AgentResult(
         answer=answer,
         source="sql",
@@ -143,7 +159,7 @@ def _generate_and_execute(
         if sql.upper().startswith(SQL_NOT_RELEVANT_TOKEN):
             return None, None, SQL_NOT_RELEVANT_TOKEN
         try:
-            sql = validate_sql(sql, max_rows)
+            sql = stem_title_patterns(validate_sql(sql, max_rows))
             return sql, execute_sql(sql, db_path, max_rows), None
         except (UnsafeSQLError, SQLExecutionError) as exc:
             error = str(exc)
@@ -206,6 +222,57 @@ def _format_rows_for_prompt(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _rupiah(value: int) -> str:
+    """Format Rupiah yang sama dengan prompt jawaban: 7500000 -> Rp7.500.000."""
+    return f"Rp{value:,}".replace(",", ".")
+
+
+def format_job_line(row: dict[str, Any]) -> str:
+    """Satu baris lowongan dengan format yang sama dengan prompt jawaban SQL."""
+    location = " ".join(str(row.get("location") or "").split())
+    line = f"- [ID:{row['id']}] {row['job_title']} - {row.get('company_name') or '-'} ({location})"
+    if isinstance(row.get("salary_min"), int) and isinstance(row.get("salary_max"), int):
+        line += f": {_rupiah(row['salary_min'])} - {_rupiah(row['salary_max'])}"
+    return line
+
+
+def complete_job_list(answer: str, rows: list[dict[str, Any]]) -> str:
+    """Tambahkan baris lowongan yang ada di hasil query tetapi tidak dikutip LLM.
+
+    Hanya berlaku jika LLM sudah menulis daftar (minimal satu ``[ID:x]``): jawaban
+    statistik tanpa daftar tidak diubah. Kenapa di kode: aturan "tampilkan setiap
+    baris" di prompt tidak cukup; pada eval b3-answer LLM tetap membuang ID 221
+    (gaji 7-10 juta untuk "di atas 8 juta", T3-02) karena menyaring ulang sendiri.
+    """
+    cited = {int(job_id) for job_id in _CITATION_TAG.findall(answer)}
+    if not cited:
+        return answer
+    missing = [
+        row
+        for row in rows
+        if isinstance(row.get("id"), int) and row["id"] not in cited and row.get("job_title")
+    ]
+    if not missing:
+        return answer
+    return answer.rstrip() + "\n" + "\n".join(format_job_line(row) for row in missing)
+
+
+def finalize_answer(answer: str, rows: list[dict[str, Any]], max_rows: int) -> str:
+    """Bagian jawaban yang faktanya sudah pasti di hasil query, ditulis kode, bukan LLM.
+
+    Urutan: daftar dilengkapi (``complete_job_list``), kalimat jumlah lowongan
+    tanpa gaji dari kolom ``lowongan_tanpa_gaji`` (hanya jika > 0; versi LLM
+    dibuang), lalu catatan hasil terpotong.
+    """
+    answer = _NO_SALARY_SENTENCE.sub("", complete_job_list(answer, rows)).rstrip()
+    no_salary = rows[0].get("lowongan_tanpa_gaji") if rows else None
+    if isinstance(no_salary, int) and no_salary > 0:
+        answer = f"{answer}\n\n{SQL_NO_SALARY_NOTE.format(count=no_salary)}"
+    if len(rows) >= max_rows:
+        answer = f"{answer}\n\n{SQL_TRUNCATED_NOTE.format(max_rows=max_rows)}"
+    return answer
+
+
 def strip_invalid_citations(answer: str, valid_ids: list[int]) -> tuple[str, list[int]]:
     """Buang tag ``[ID:x]`` yang ID-nya tidak ada di hasil query; teks lainnya tetap.
 
@@ -234,6 +301,25 @@ def extract_sql(text: str) -> str:
     """Ambil isi blok ```sql``` dari balasan LLM; jika tidak ada, kembalikan teks apa adanya."""
     match = _CODE_FENCE.search(text)
     return (match.group(1) if match else text).strip()
+
+
+def stem_title_patterns(sql: str) -> str:
+    """Potong akhiran pelaku di pola ``lower(job_title) LIKE '...'``: designer -> design.
+
+    Pola kata dasar adalah superset pola aslinya, jadi tidak ada lowongan yang
+    hilang; tambahannya hanya judul berkata dasar sama (misalnya "Graphic Design"
+    untuk "graphic designer"). Hanya pola ``job_title`` yang diubah, bukan lokasi
+    atau perusahaan.
+
+    Kenapa di kode: aturan 3 dan contoh "desainer interior" di prompt tidak cukup;
+    pada eval b3-sql LLM tetap menulis '%graphic designer%' (T11-03 menjawab 1, bukan 2).
+    """
+
+    def _stem(match: re.Match[str]) -> str:
+        pattern = _TITLE_STEM_WORD.sub(lambda m: _TITLE_STEMS[m.group(1)], match.group(2))
+        return f"{match.group(1)}{pattern}{match.group(3)}"
+
+    return _TITLE_PATTERN.sub(_stem, sql)
 
 
 def validate_sql(sql: str, max_rows: int = DEFAULT_MAX_ROWS) -> str:

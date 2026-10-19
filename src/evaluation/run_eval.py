@@ -132,6 +132,7 @@ def run_case(
         "models": sorted({call.model for call in run.usage.calls}),
         "seconds": round(seconds, 2),
         "error": crashed or run.error,
+        "sql": [sub.sql for sub in run.subresults if sub.sql],
     }
 
 
@@ -160,6 +161,7 @@ def rescore_record(
         **record,
         **{key: old[key] for key in keep},
         "within_budget": old["llm_calls"] <= record["llm_budget"],
+        "sql": old.get("sql", []),
     }
 
 
