@@ -44,7 +44,7 @@ RAG_RESULT = AgentResult(
         llm_calls=2,
         total_tokens=2400,
         calls=[
-            LLMCall(step="router", model="gpt-4o-mini-2024-07-18", input_tokens=550,
+            LLMCall(step="planner", model="gpt-4o-mini-2024-07-18", input_tokens=550,
                     output_tokens=30, total_tokens=580),
             LLMCall(step="rag_answer", model="gpt-4o-mini-2024-07-18", input_tokens=1600,
                     output_tokens=220, total_tokens=1820),
@@ -124,7 +124,7 @@ def test_llm_usage_detail_per_call(calls):
     )
     usage_table = app.dataframe[-1].value.to_dict("records")
     assert [row["Langkah"] for row in usage_table] == [
-        "Router: pilih agent",
+        "Planner: pecah pertanyaan",
         "RAG: jawab dari kandidat",
     ]
     assert usage_table[1] == {
@@ -294,3 +294,45 @@ def test_dollar_sign_in_answer_is_not_latex(monkeypatch):
     app.chat_input[0].set_value("Halo").run()
 
     assert r"Gaji \$1000 sampai \$2000." in [md.value for md in app.markdown]
+
+
+# --- Jawaban gabungan beberapa agent -----------------------------------------
+
+MULTI_RESULT = AgentResult(
+    answer="(gabungan, dipakai untuk riwayat)",
+    source="multi",
+    job_ids=[14],
+    parts=[
+        SQL_RESULT.model_copy(update={"answer": f"**Rata-rata gaji?**\n{SQL_RESULT.answer}"}),
+        RAG_RESULT.model_copy(update={"answer": f"**Lowongan data analyst**\n{RAG_RESULT.answer}"}),
+        AgentResult(answer="Catatan: sebagian permintaan tidak dijalankan.", source="general"),
+    ],
+    usage=LLMUsage(llm_calls=4, total_tokens=4000),
+)
+
+
+def test_prepare_display_multi_builds_display_per_part(jobs_db):
+    display = prepare_display(MULTI_RESULT, jobs_db)
+
+    assert display.text == "" and display.cards == []
+    assert [len(part.cards) for part in display.parts] == [0, 1, 0]
+    assert display.parts[1].text == "**Lowongan data analyst**\nAda satu:"
+
+
+def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
+    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: DEPS)
+    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda q, **kwargs: MULTI_RESULT)
+    app = _app()
+    app.chat_input[0].set_value("Rata-rata gaji dan lowongan data analyst").run()
+
+    assert not app.exception
+    texts = [md.value for md in app.markdown]
+    assert f"**Rata-rata gaji?**\n{SQL_RESULT.answer}" in texts
+    assert "**Lowongan data analyst**\nAda satu:" in texts
+    assert "**Data Analyst**  \nPT Alpha" in texts  # kartu RAG
+    assert "**Kenapa cocok:** cocok." in texts
+    assert "Catatan: sebagian permintaan tidak dijalankan." in texts
+    assert [{"rata": 4_175_000, "n": 4}] in [t.value.to_dict("records") for t in app.dataframe]
+    usage_panels = [e.label for e in app.expander if e.label.startswith("Detail:")]
+    assert len(usage_panels) == 1
+    assert usage_panels[0].startswith("Detail: Gabungan beberapa agent | 4 panggilan LLM")

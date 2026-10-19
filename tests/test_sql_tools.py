@@ -12,6 +12,7 @@ from agents.sql_agent import (
     UnsafeSQLError,
     execute_sql,
     extract_sql,
+    stem_title_patterns,
     validate_sql,
 )
 from repositories.job_repository import connect_readonly
@@ -22,6 +23,28 @@ REAL_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
 def _count_jobs(db_path) -> int:
     with closing(sqlite3.connect(db_path)) as db:
         return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+
+
+# --- aturan pencocokan deterministik -----------------------------------------
+
+
+def test_title_patterns_are_stemmed():
+    sql = (
+        "WHERE (lower(job_title) LIKE '%graphic designer%' OR lower(job_title) LIKE '%desainer grafis%')"
+        " AND lower(location) LIKE '%bandung%'"
+    )
+    assert stem_title_patterns(sql) == (
+        "WHERE (lower(job_title) LIKE '%graphic design%' OR lower(job_title) LIKE '%desain grafis%')"
+        " AND lower(location) LIKE '%bandung%'"
+    )
+
+
+def test_title_stem_keeps_other_patterns_and_columns():
+    sql = (
+        "WHERE lower(job_title) LIKE '%data analyst%' AND lower(company_name) LIKE '%designer%'"
+        " AND lower(job_title) LIKE '%design%'"
+    )
+    assert stem_title_patterns(sql) == sql
 
 
 # --- extract_sql / validate_sql --------------------------------------------

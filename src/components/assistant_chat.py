@@ -1,8 +1,10 @@
 """Halaman Asisten Karier: chat yang memanggil supervisor agent.
 
-Komponen ini hanya mengurus tampilan dan riwayat chat. Pemilihan agent
-(SQL, RAG, atau pesan umum) sepenuhnya dikerjakan ``run_supervisor``;
-UI tidak memanggil agent lain secara langsung.
+Komponen ini hanya mengurus tampilan dan riwayat chat. Pemilihan dan
+penggabungan agent (SQL, RAG, atau pesan umum) sepenuhnya dikerjakan
+``run_supervisor``; UI tidak memanggil agent lain secara langsung. Jawaban
+gabungan (``source="multi"``) ditampilkan per bagian dengan aturan yang sama
+seperti jawaban satu agent.
 """
 
 import logging
@@ -38,9 +40,10 @@ SOURCE_LABELS = {
     "rag": "Pencarian lowongan (RAG)",
     "sql": "Statistik data (SQL)",
     "general": "Pesan umum",
+    "multi": "Gabungan beberapa agent",
 }
 STEP_LABELS = {
-    "router": "Router: pilih agent",
+    "planner": "Planner: pecah pertanyaan",
     "sql_generate": "SQL: tulis query",
     "sql_retry": "SQL: perbaiki query",
     "sql_answer": "SQL: rangkum hasil",
@@ -60,10 +63,13 @@ class Display:
     """Isi bubble satu jawaban, dihitung sekali lalu disimpan di riwayat.
 
     Disimpan agar rerun Streamlit tidak membaca ulang database untuk kartu SQL.
+    ``parts`` berisi tampilan per bagian untuk jawaban gabungan, urut sama
+    dengan ``AgentResult.parts``.
     """
 
     text: str
     cards: list[tuple[dict[str, Any], str | None]] = field(default_factory=list)
+    parts: list["Display"] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -193,7 +199,21 @@ def _render_message(message: dict[str, Any]) -> None:
 
 
 def _render_result(result: AgentResult, display: Display, seconds: float | None) -> None:
-    """Isi bubble asisten: teks, kartu lowongan, tabel SQL, lalu detail LLM.
+    """Isi bubble asisten: setiap bagian jawaban, lalu satu detail LLM untuk total.
+
+    Jawaban gabungan dirender per bagian dengan ``_render_body`` yang sama,
+    sehingga kartu SQL dan RAG tetap memakai aturan masing-masing.
+    """
+    if result.parts:
+        for part, part_display in zip(result.parts, display.parts, strict=True):
+            _render_body(part, part_display)
+    else:
+        _render_body(result, display)
+    _render_llm_usage(result, seconds)
+
+
+def _render_body(result: AgentResult, display: Display) -> None:
+    """Teks, kartu lowongan, dan tabel SQL untuk satu jawaban agent.
 
     Kartu dipakai untuk setiap lowongan yang disebut, baik dari RAG maupun SQL,
     sehingga tampilannya sama apa pun agent yang menjawab.
@@ -208,7 +228,6 @@ def _render_result(result: AgentResult, display: Display, seconds: float | None)
             st.dataframe(result.rows, hide_index=True)
             if result.sql:
                 st.code(result.sql, language="sql")
-    _render_llm_usage(result, seconds)
 
 
 def _render_job_card(job: dict[str, Any], note: str | None, note_label: str) -> None:
@@ -258,11 +277,12 @@ def _render_llm_usage(result: AgentResult, seconds: float | None) -> None:
             )
         else:
             st.caption("Tidak ada panggilan LLM.")
-        if result.source == "rag":
+        rag_searches = sum(part.source == "rag" for part in result.parts or [result])
+        if rag_searches:
             embedding_model = os.getenv("LLM_EMBEDDING_MODEL", "-")
             st.caption(
-                f"Ditambah 1 embedding pertanyaan ({embedding_model}) untuk pencarian di "
-                "Qdrant. Jumlah tokennya tidak dilaporkan oleh API embedding."
+                f"Ditambah {rag_searches} embedding pertanyaan ({embedding_model}) untuk "
+                "pencarian di Qdrant. Jumlah tokennya tidak dilaporkan oleh API embedding."
             )
 
 
@@ -278,8 +298,11 @@ def prepare_display(result: AgentResult, db_path: str) -> Display:
     - SQL: jika jawaban memuat baris ``- [ID:x] ...``, detail lowongannya diambil
       dari SQLite agar kartunya sama dengan RAG. Jika tidak (misalnya jawaban
       jumlah atau rata-rata), hanya teks dan tabel.
+    - Gabungan (``parts`` terisi): aturan di atas diterapkan per bagian.
     - Lainnya: hanya teks.
     """
+    if result.parts:
+        return Display("", parts=[prepare_display(part, db_path) for part in result.parts])
     if not result.job_ids:
         return Display(result.answer)
     intro, notes = split_rag_answer(result.answer)

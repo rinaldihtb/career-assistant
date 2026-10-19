@@ -79,17 +79,22 @@ class AgentResult(BaseModel):
         answer: Teks jawaban untuk pengguna.
         source: Agent yang menghasilkan jawaban. ``"general"`` berarti supervisor
             menjawab sendiri dengan pesan tetap (sapaan atau di luar topik).
+            ``"multi"`` berarti jawaban gabungan beberapa sub-tugas; isinya ada di ``parts``.
         job_ids: ID lowongan yang dikutip (RAG) atau muncul di hasil query (SQL).
         sql: Query yang akhirnya dieksekusi (khusus SQL agent).
         rows: Data mentah hasil query atau lowongan yang ditemukan, untuk UI dan debug.
         usage: Jumlah panggilan LLM dan token.
         error: Pesan error internal jika agent gagal; ``None`` jika sukses.
+        parts: Khusus ``source="multi"``: satu ``AgentResult`` per bagian jawaban
+            (per sub-tugas, ditambah catatan jika ada), urut tampil di UI. Kosong
+            untuk hasil satu agent, sehingga kode lama tidak terpengaruh.
     """
 
     answer: str
-    source: Literal["rag", "sql", "general"]
+    source: Literal["rag", "sql", "general", "multi"]
     job_ids: list[int] = Field(default_factory=list)
     sql: str | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)
     usage: LLMUsage = Field(default_factory=LLMUsage)
     error: str | None = None
+    parts: list["AgentResult"] = Field(default_factory=list)
