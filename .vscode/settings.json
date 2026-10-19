@@ -1,9 +1,0 @@
-{
-  "python.analysis.extraPaths": [
-    "./src",
-    "."
-  ],
-  "python.analysis.diagnosticSeverityOverrides": {
-    "reportMissingImports": "none"
-  }
-}
