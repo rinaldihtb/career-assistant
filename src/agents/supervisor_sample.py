@@ -8,6 +8,9 @@ bisa masuk dua rute sengaja ikut diuji (gaji di atas angka tertentu -> sql).
 Kasus lanjutan dinilai lulus jika rute benar, pertanyaan mandiri memuat semua
 kata wajib, dan tidak memuat kata yang dilarang (konteks lama yang seharusnya
 diganti, atau konteks yang tidak boleh ditempel ke pertanyaan baru).
+
+Rute di sini = daftar agent dari sub-tugas planner; "general" berarti tanpa agent.
+Evaluasi lengkap (49 kasus, termasuk pertanyaan majemuk) ada di ``make eval``.
 """
 
 import os
@@ -95,6 +98,16 @@ FOLLOW_UPS = [
 ]
 
 
+def _route(state) -> str:
+    """Rute ringkas dari sub-tugas planner: "sql", "rag", "sql+rag", atau "general"."""
+    return "+".join(task["agent"] for task in state["subtasks"]) or "general"
+
+
+def _standalone(state) -> str:
+    """Gabungan pertanyaan mandiri semua sub-tugas."""
+    return " | ".join(task["question"] for task in state["subtasks"])
+
+
 def _invoke(question, history, context):
     start = time.perf_counter()
     state = SUPERVISOR_GRAPH.invoke({"question": question, "history": history}, context=context)
@@ -105,7 +118,7 @@ def _print_case(question, state, elapsed, check):
     result = state["result"]
     print("=" * 100)
     print(f"Q: {question}")
-    print(f"Rute: {state['route']} | mandiri: {state['standalone_question']!r} | {check}")
+    print(f"Rute: {_route(state)} | mandiri: {_standalone(state)!r} | {check}")
     print(f"Jawaban:\n{result.answer}")
     print(f"job_ids {result.job_ids} | sql {result.sql!r} | error {result.error}")
     print(
@@ -121,14 +134,14 @@ def run_supervisor_check(llm: BaseChatModel, vector_store: VectorStore) -> None:
 
     for question, expected in QUESTIONS:
         state, elapsed = _invoke(question, [], context)
-        check = "OK" if state["route"] == expected else f"SALAH (harusnya {expected})"
+        check = "OK" if _route(state) == expected else f"SALAH (harusnya {expected})"
         summary.append((question, state, elapsed, check))
         _print_case(question, state, elapsed, check)
 
     for history, question, expected, required, forbidden in FOLLOW_UPS:
         state, elapsed = _invoke(question, history, context)
-        rewritten = state["standalone_question"].lower()
-        route_ok = state["route"] == expected
+        rewritten = _standalone(state).lower()
+        route_ok = _route(state) == expected
         words_ok = all(word in rewritten for word in required) and not any(
             word in rewritten for word in forbidden
         )
@@ -145,7 +158,7 @@ def run_supervisor_check(llm: BaseChatModel, vector_store: VectorStore) -> None:
     for question, state, elapsed, check in summary:
         usage = state["result"].usage
         print(
-            f"{question[:55]:<55} {state['route']:<8} {elapsed:>6.2f} {usage.llm_calls:>5} "
+            f"{question[:55]:<55} {_route(state):<8} {elapsed:>6.2f} {usage.llm_calls:>5} "
             f"{usage.total_tokens:>6}  {check}"
         )
     correct = sum(item[3] == "OK" for item in summary)
