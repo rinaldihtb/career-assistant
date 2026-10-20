@@ -1,7 +1,9 @@
 """Set eval dan pemeriksaannya, tanpa API key.
 
-- Skema tests/eval/queries.yaml valid dan gold SQL-nya jalan di data asli
-  (dilewati jika data/database.sqlite belum di-seed).
+- Skema tests/eval/queries.yaml dan tests/eval/heldout.yaml valid dan gold
+  SQL-nya jalan di data asli (dilewati jika data/database.sqlite belum di-seed,
+  atau jika heldout.yaml belum ditulis). Pesan gagal hanya menampilkan ID kasus,
+  supaya isi held-out tidak terbaca saat ``make test``.
 - Fungsi pemeriksaan di ``evaluation.checks`` dites dengan contoh kecil.
 - ``run_case`` dites ujung ke ujung dengan LLM palsu dan database fixture.
 """
@@ -33,6 +35,15 @@ from evaluation.run_eval import load_cases, rescore_record, run_case, summarize
 from models.agent import AgentResult
 
 CASES_PATH = Path(__file__).parent / "eval" / "queries.yaml"
+HELDOUT_PATH = Path(__file__).parent / "eval" / "heldout.yaml"
+CASE_SETS = [
+    pytest.param(CASES_PATH, id="queries"),
+    pytest.param(
+        HELDOUT_PATH,
+        id="heldout",
+        marks=pytest.mark.skipif(not HELDOUT_PATH.exists(), reason="heldout.yaml belum ditulis"),
+    ),
+]
 REAL_DB = Path("data/database.sqlite")
 CHECK_KEYS = {
     "sql_values",
@@ -52,8 +63,9 @@ USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 # --- Set eval ----------------------------------------------------------------
 
 
-def test_cases_schema():
-    cases = load_cases(CASES_PATH)
+@pytest.mark.parametrize("cases_path", CASE_SETS)
+def test_cases_schema(cases_path):
+    cases = load_cases(cases_path)
     ids = [case["id"] for case in cases]
 
     assert len(ids) == len(set(ids))
@@ -76,11 +88,28 @@ def test_load_cases_filters_by_prefix():
     assert ids and all(i.startswith("T3") or i == "T6b-01" for i in ids)
 
 
+@pytest.mark.skipif(not HELDOUT_PATH.exists(), reason="heldout.yaml belum ditulis")
+def test_heldout_is_separate_from_queries():
+    """Held-out memakai ID berawalan "H" dan tidak menyalin pertanyaan queries.yaml.
+
+    ID berawalan "H" membuat hasil held-out tidak tercampur dengan kasus T* di
+    laporan per kasus; kategori tetap T1a..T13 supaya ringkasan per kategori
+    bisa dibandingkan langsung dengan queries.yaml.
+    """
+    known = {" ".join(case["question"].lower().split()) for case in load_cases(CASES_PATH)}
+    heldout = load_cases(HELDOUT_PATH)
+
+    assert [case["id"] for case in heldout if not case["id"].startswith("H")] == []
+    copied = [case["id"] for case in heldout if " ".join(case["question"].lower().split()) in known]
+    assert copied == []
+
+
 @pytest.mark.skipif(not REAL_DB.exists(), reason="data/database.sqlite belum di-seed")
-def test_gold_sql_runs_on_real_database():
+@pytest.mark.parametrize("cases_path", CASE_SETS)
+def test_gold_sql_runs_on_real_database(cases_path):
     uri = f"file:{REAL_DB}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as conn:
-        for case in load_cases(CASES_PATH):
+        for case in load_cases(cases_path):
             checks = case.get("checks", {})
             for sql in checks.get("sql_values", []):
                 assert conn.execute(sql).fetchall(), case["id"]
