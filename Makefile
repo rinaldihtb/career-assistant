@@ -60,3 +60,8 @@ supervisor-graph:
 
 eval:
 	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_eval $(ARGS)
+
+.PHONY: sample-cv
+
+sample-cv:
+	PYTHONPATH=.:src $(PYTHON) -m cv.profile_sample $(ARGS)
