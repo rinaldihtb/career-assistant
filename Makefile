@@ -65,3 +65,8 @@ eval:
 
 sample-cv:
 	PYTHONPATH=.:src $(PYTHON) -m cv.profile_sample $(ARGS)
+
+.PHONY: sample-match
+
+sample-match:
+	PYTHONPATH=.:src $(PYTHON) -m cv.match_sample $(ARGS)
