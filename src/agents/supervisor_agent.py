@@ -14,7 +14,8 @@ Graph::
   yang sudah ada (SQL read-only, sitasi [ID:x]) tetap berlaku per sub-tugas.
 - ``synthesize``: TANPA LLM. Satu sub-tugas diteruskan apa adanya; lebih dari satu
   digabung dengan template (judul per bagian) sehingga angka dan ID tidak ditulis ulang.
-- ``respond``: pesan tetap tanpa LLM untuk respons selain ``answer``.
+- ``respond``: pesan tetap tanpa LLM untuk respons selain ``answer``, kecuali
+  ``out_of_scope`` yang dibalas LLM secara luwes dengan guard (1 panggilan tambahan).
 
 Kenapa orkestrasi ada di supervisor, bukan di agent: setiap agent tetap mengerjakan
 satu tugas (mudah dites, guard tidak berubah). Baseline eval menunjukkan dua tugas
@@ -49,6 +50,8 @@ from langgraph.types import Send
 from pydantic import BaseModel, Field
 
 from agents.prompts import (
+    SUPERVISOR_CHAT_SYSTEM,
+    SUPERVISOR_CHAT_USER,
     SUPERVISOR_CLARIFY_MESSAGE,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_FAILED_MESSAGE,
@@ -68,9 +71,9 @@ Agent = Literal["sql", "rag"]
 Response = Literal["answer", "clarify", "refuse", "out_of_scope", "unsupported"]
 
 MAX_SUBTASKS = 3
-# Riwayat hanya dipakai untuk menulis ulang pertanyaan lanjutan, jadi 3 putaran
-# terakhir sudah cukup; token planner tetap kecil.
-MAX_HISTORY_MESSAGES = 6
+# Riwayat dipakai planner untuk menulis ulang pertanyaan lanjutan dan balasan luwes
+# untuk pertanyaan tentang percakapan. 5 putaran terakhir (5 pengguna + 5 asisten).
+MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_CHARS = 600
 
 AGENT_TO_NODE: dict[str, str] = {"sql": "sql_agent", "rag": "rag_agent"}
@@ -83,6 +86,9 @@ FIXED_MESSAGES: dict[str, str] = {
 
 # Baris lowongan di jawaban: "- [ID:56] Judul - Perusahaan (Lokasi): catatan".
 _JOB_LINE = re.compile(r"^\s*[-*•]?\s*\[ID:\s*\d+\]", re.IGNORECASE)
+
+# Balasan luwes tidak boleh memuat tag ID atau nominal Rupiah: itu wilayah agent SQL/RAG.
+_UNSAFE_CHAT = re.compile(r"\[ID:|Rp\s?\d", re.IGNORECASE)
 
 
 class SubTask(BaseModel):
@@ -175,8 +181,10 @@ def run_supervisor(
     """Jawab satu pertanyaan pengguna lewat satu atau beberapa agent.
 
     Jumlah panggilan LLM: planner 1 + agent per sub-tugas (SQL 1-3, RAG 0-1).
-    Penggabungan tidak memakai LLM. Respons tanpa data (sapaan, tanya balik,
-    penolakan) hanya 1 panggilan (planner); pertanyaan kosong 0.
+    Penggabungan tidak memakai LLM. Respons tanpa data (tanya balik, penolakan,
+    data tidak tersedia) hanya 1 panggilan (planner); ``out_of_scope`` (sapaan,
+    pertanyaan riwayat, topik lain) 2 panggilan (planner + balasan luwes);
+    pertanyaan kosong 0.
 
     Args:
         question: Pertanyaan pengguna pada giliran ini, boleh berupa pertanyaan
@@ -279,13 +287,29 @@ def run_rag_node(task: SubTaskInput, runtime: Runtime[SupervisorContext]) -> dic
     return {"collected": [(task["index"], result)]}
 
 
-def respond(state: SupervisorState) -> dict:
-    """Node pesan tetap tanpa LLM: tanya balik, tolak, di luar topik, data tidak tersedia.
+def respond(state: SupervisorState, runtime: Runtime[SupervisorContext]) -> dict:
+    """Node respons tanpa data: tanya balik, tolak, di luar topik, data tidak tersedia.
 
-    Kenapa tanpa LLM: jawaban ini tidak butuh data, dan pesan tetap tidak bisa
+    Kenapa tanpa LLM untuk ``clarify``, ``refuse``, ``unsupported``: pesan tetap tidak bisa
     berhalusinasi tentang lowongan (baseline: "Ada lowongan?" dijawab 5 lowongan acak).
+
+    ``out_of_scope`` (sapaan, pertanyaan kemampuan, pertanyaan riwayat, topik lain)
+    dibalas LLM supaya luwes dan bisa memakai riwayat percakapan. Risiko halusinasi
+    ditutup dua lapis: prompt melarang menyebut lowongan/angka/ID, dan ``_chat_reply``
+    membuang balasan yang memuat tag ID atau nominal Rupiah (kembali ke pesan tetap).
     """
-    result = AgentResult(answer=FIXED_MESSAGES[state["response"]], source="general")
+    response = state["response"]
+    if response == "out_of_scope" and state["question"].strip():
+        chat_usage = LLMUsage()
+        answer = _chat_reply(state, runtime.context.llm, chat_usage)
+        # _with_totals menimpa usage hasil, jadi token balasan digabung lewat planner_usage.
+        state = {
+            **state,
+            "planner_usage": state.get("planner_usage", LLMUsage()).merged(chat_usage),
+        }
+    else:
+        answer = FIXED_MESSAGES[response]
+    result = AgentResult(answer=answer, source="general")
     return {"subresults": [], "result": _with_totals(result, state, [])}
 
 
@@ -380,6 +404,40 @@ def _with_totals(
     )
 
 
+def _chat_reply(state: SupervisorState, llm: BaseChatModel, usage: LLMUsage) -> str:
+    """Balasan luwes untuk ``out_of_scope``; satu panggilan LLM dengan riwayat percakapan.
+
+    Kembali ke ``SUPERVISOR_GENERAL_MESSAGE`` jika LLM gagal, balasan kosong, atau
+    balasan memuat tag ``[ID:x]`` / nominal Rupiah (bukan wilayah balasan umum).
+    """
+    history = state.get("history", [])
+    previous_questions = format_previous_questions(history)
+    messages = [
+        SystemMessage(SUPERVISOR_CHAT_SYSTEM),
+        HumanMessage(
+            SUPERVISOR_CHAT_USER.format(
+                previous_questions=previous_questions,
+                history=format_history(history),
+                question=state["question"].strip(),
+            )
+        ),
+    ]
+    try:
+        response = llm.invoke(messages)
+    except Exception:  # noqa: BLE001 - tipe error provider LLM sangat beragam
+        return SUPERVISOR_GENERAL_MESSAGE
+    usage.add(response, step="chat")
+    text = response.text.strip()
+    if not text:
+        return SUPERVISOR_GENERAL_MESSAGE
+    # Pola terlarang yang memang diketik pengguna (misalnya "gaji di atas Rp 8 juta")
+    # boleh muncul saat pertanyaan itu ditulis ulang; selain itu dianggap karangan LLM.
+    unsafe = _UNSAFE_CHAT.search(text)
+    if unsafe and unsafe.group(0).lower() not in previous_questions.lower():
+        return SUPERVISOR_GENERAL_MESSAGE
+    return text
+
+
 def _compact_assistant(content: str) -> str:
     """Ringkas jawaban asisten untuk riwayat: baris pembuka + identitas setiap lowongan.
 
@@ -414,6 +472,26 @@ def format_history(history: Sequence[Mapping[str, str]]) -> str:
             content = f"{content[:MAX_HISTORY_CHARS]}..."
         lines.append(f"{'Pengguna' if is_user else 'Asisten'}: {content}")
     return "\n".join(lines) or SUPERVISOR_NO_HISTORY
+
+
+def format_previous_questions(history: Sequence[Mapping[str, str]]) -> str:
+    """Daftar bernomor pertanyaan pengguna dari riwayat, paling lama di atas.
+
+    Kenapa dipisah dari ``format_history``: LLM balasan luwes pernah menjawab "belum ada
+    pertanyaan sebelumnya" padahal riwayat lengkap ada di prompt. Dengan daftar yang
+    disiapkan kode, "pertanyaan terakhir" = nomor terbesar, tidak perlu ditebak LLM.
+    Batasnya sama dengan ``format_history``.
+    """
+    questions = []
+    for message in list(history)[-MAX_HISTORY_MESSAGES:]:
+        if message.get("role") != "user":
+            continue
+        content = " ".join(str(message.get("content", "")).split())
+        if content:
+            questions.append(
+                f"{content[:MAX_HISTORY_CHARS]}..." if len(content) > MAX_HISTORY_CHARS else content
+            )
+    return "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)) or SUPERVISOR_NO_HISTORY
 
 
 # --- Graph -------------------------------------------------------------------
