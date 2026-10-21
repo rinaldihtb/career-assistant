@@ -206,6 +206,25 @@ def run_supervisor(
 # --- Node --------------------------------------------------------------------
 
 
+def _unique_subtasks(tasks: Sequence[SubTask]) -> list[dict[str, str]]:
+    """Sub-tugas planner tanpa pertanyaan kosong dan tanpa duplikat (agent + pertanyaan sama).
+
+    Kenapa di Python, bukan aturan prompt: planner pernah mengeluarkan dua sub-tugas
+    identik (uji manual 20 Okt 2026, "di mana saja loker selain di jakarta?"), sehingga
+    jawaban tampil dua kali dan biaya LLM agent berlipat. Pembandingan mengabaikan huruf
+    besar dan spasi berlebih; urutan kemunculan pertama dipertahankan.
+    """
+    seen: set[tuple[str, str]] = set()
+    unique = []
+    for task in tasks:
+        question = task.question.strip()
+        key = (task.agent, " ".join(question.lower().split()))
+        if question and key not in seen:
+            seen.add(key)
+            unique.append({"agent": task.agent, "question": question})
+    return unique
+
+
 def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -> dict:
     """Node planner: pecah pertanyaan menjadi sub-tugas dalam satu panggilan LLM.
 
@@ -240,11 +259,7 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
     if plan.response != "answer":
         return _plan_update(plan.response, [], usage)
 
-    subtasks = [
-        {"agent": task.agent, "question": task.question.strip()}
-        for task in plan.subtasks
-        if task.question.strip()
-    ]
+    subtasks = _unique_subtasks(plan.subtasks)
     if not subtasks:
         return _fallback(question, usage, "Planner tidak memberi sub-tugas")
     skipped = [*plan.skipped, *(task["question"] for task in subtasks[MAX_SUBTASKS:])]
