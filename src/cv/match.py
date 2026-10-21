@@ -5,9 +5,13 @@ Alur ``match_jobs``:
 2. Qdrant: ``k`` chunk terdekat dari seluruh koleksi, lalu skor diagregasi per ``job_id``.
 3. Skor semantik dikalibrasi ke 0..1 dengan batas TETAP (``semantic_floor``/``ceiling``),
    bukan min-max per query, supaya persentase tidak bergeser setiap "Cocokkan ulang".
-4. Porsi skill dari ``cv.skills`` (regex, kosakata yang di-cache per proses).
-5. Skor akhir = ``w * semantik + (1 - w) * porsi skill``; lowongan tanpa skill yang disebut
-   memakai skor semantik saja.
+4. Skor skill dari ``cv.skills`` (regex, kosakata yang di-cache per proses):
+   ``cocok / (disebut + skill_prior)``. Tanpa ``skill_prior``, lowongan yang hanya menyebut
+   satu skill umum mendapat 100% jika skill itu ada di CV. Terukur pada CV asli: 5 lowongan
+   sales/brand masuk top-10 karena "English" atau "Market Research" saja (1/1), sementara
+   85 lowongan data/AI/software tersedia. 71 dari 473 lowongan hanya menyebut 1 skill.
+5. Skor akhir = ``w * semantik + (1 - w) * skor skill``. Lowongan yang tidak menyebut skill
+   kosakata mendapat skor skill 0 (rumus yang sama, tanpa kasus khusus).
 
 Kenapa ringkasan profil sebagai default: profil bisa dikoreksi pengguna di UI, dan
 "Cocokkan ulang" hanya bermakna jika koreksi itu ikut di-embed. Ringkasan juga tidak
@@ -37,21 +41,26 @@ class MatchConfig(BaseModel):
 
     Attributes:
         query: Teks yang di-embed: ringkasan profil atau teks CV mentah.
-        aggregation: Skor lowongan dari chunk-nya: rata-rata ``top_chunks`` teratas
-            atau chunk terbaik saja.
+        aggregation: Skor lowongan dari chunk-nya: chunk terbaik (``max``) atau rata-rata
+            ``top_chunks`` teratas (``mean``). Default ``max``: pada CV asli top-10 keduanya
+            berisi lowongan yang sama, sedangkan ``max`` tidak butuh isian skor dan skor
+            chunk terbaik tidak berubah saat ``k`` dinaikkan.
         top_chunks: Jumlah chunk yang dirata-rata (hanya untuk ``mean``).
         k: Jumlah chunk yang diambil dari Qdrant (dari 3.613).
-        semantic_weight: Bobot komponen semantik; sisanya untuk porsi skill.
+        semantic_weight: Bobot komponen semantik; sisanya untuk skor skill.
+        skill_prior: Penambah penyebut skor skill; makin besar, makin sedikit pengaruh
+            lowongan yang hanya menyebut 1-2 skill. ``0`` = porsi mentah.
         semantic_floor: Skor cosine yang dianggap 0%.
         semantic_ceiling: Skor cosine yang dianggap 100%.
         limit: Jumlah lowongan yang dikembalikan.
     """
 
     query: Literal["profile", "cv_text"] = "profile"
-    aggregation: Literal["mean", "max"] = "mean"
+    aggregation: Literal["mean", "max"] = "max"
     top_chunks: int = Field(default=3, ge=1)
     k: int = Field(default=400, ge=1)
     semantic_weight: float = Field(default=0.6, ge=0.0, le=1.0)
+    skill_prior: float = Field(default=2.0, ge=0.0)
     semantic_floor: float = 0.25
     semantic_ceiling: float = 0.65
     limit: int = Field(default=10, ge=1)
@@ -73,6 +82,7 @@ class JobMatch(BaseModel):
     semantic: float
     semantic_scaled: float
     skill_portion: float | None = None
+    skill_score: float = 0.0
     matched_skills: list[str] = Field(default_factory=list)
     missing_skills: list[str] = Field(default_factory=list)
 
@@ -175,11 +185,19 @@ def scale_semantic(score: float, floor: float, ceiling: float) -> float:
     return min(1.0, max(0.0, (score - floor) / (ceiling - floor)))
 
 
-def combine_score(semantic_scaled: float, skill_portion: float | None, weight: float) -> float:
-    """Skor akhir 0..1. Tanpa porsi skill (lowongan tidak menyebut skill): semantik saja."""
-    if skill_portion is None:
-        return semantic_scaled
-    return weight * semantic_scaled + (1 - weight) * skill_portion
+def skill_score(matched: int, required: int, prior: float) -> float:
+    """Skor skill 0..1: ``matched / (required + prior)``; 0 jika lowongan tidak menyebut skill.
+
+    ``prior`` bekerja seperti menambah skill "tak diketahui" yang dianggap tidak dimiliki:
+    1/1 dengan prior 2 menjadi 0,33, sedangkan 6/7 menjadi 0,67.
+    """
+    denominator = required + prior
+    return matched / denominator if denominator > 0 else 0.0
+
+
+def combine_score(semantic_scaled: float, skill: float, weight: float) -> float:
+    """Skor akhir 0..1: rata-rata berbobot skor semantik terkalibrasi dan skor skill."""
+    return weight * semantic_scaled + (1 - weight) * skill
 
 
 def rank_jobs(
@@ -220,7 +238,7 @@ def rank_jobs(
     semantic = aggregate_job_scores(hits, method=config.aggregation, top_chunks=config.top_chunks)
     index = load_job_skill_index(str(Path(db_path).resolve()))
 
-    scored: list[tuple[float, float, int, float, Any]] = []
+    scored: list[tuple[float, float, int, float, float, Any]] = []
     for job_id, raw in semantic.items():
         if job_id not in index.vocab:
             continue  # vektor basi: ID tidak ada lagi di SQLite
@@ -231,8 +249,9 @@ def rank_jobs(
             frequency=index.frequency,
         )
         scaled = scale_semantic(raw, config.semantic_floor, config.semantic_ceiling)
-        total = combine_score(scaled, skills.portion, config.semantic_weight)
-        scored.append((total, raw, job_id, scaled, skills))
+        skill = skill_score(len(skills.matched), skills.required, config.skill_prior)
+        total = combine_score(scaled, skill, config.semantic_weight)
+        scored.append((total, raw, job_id, scaled, skill, skills))
 
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
     top = scored[: config.limit]
@@ -253,10 +272,11 @@ def rank_jobs(
             semantic=raw,
             semantic_scaled=scaled,
             skill_portion=skills.portion,
+            skill_score=skill,
             matched_skills=list(skills.matched),
             missing_skills=list(skills.missing),
         )
-        for total, raw, job_id, scaled, skills in top
+        for total, raw, job_id, scaled, skill, skills in top
         if job_id in details
     ]
     return matches, len(chunks), len(semantic)

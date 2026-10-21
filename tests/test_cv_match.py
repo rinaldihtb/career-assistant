@@ -13,6 +13,7 @@ from cv.match import (
     match_jobs,
     profile_query_text,
     scale_semantic,
+    skill_score,
 )
 from cv.profile import CVProfile, Experience
 from repositories.job_repository import get_job_descriptions
@@ -127,9 +128,31 @@ def test_scale_semantic_is_linear_and_clipped():
         scale_semantic(0.5, 0.6, 0.6)
 
 
-def test_combine_score_without_skill_portion_uses_semantic_only():
-    assert combine_score(0.4, None, 0.6) == 0.4
+@pytest.mark.parametrize(
+    ("matched", "required", "prior", "expected"),
+    [
+        (1, 1, 2.0, 1 / 3),
+        (6, 7, 2.0, 6 / 9),
+        (0, 0, 2.0, 0.0),
+        (1, 1, 0.0, 1.0),
+        (0, 0, 0.0, 0.0),
+    ],
+)
+def test_skill_score_with_prior(matched, required, prior, expected):
+    assert skill_score(matched, required, prior) == pytest.approx(expected)
+
+
+def test_one_generic_skill_no_longer_beats_many_matched_skills():
+    """Kegagalan terukur di CV asli: lowongan sales 1/1 ("English") mengalahkan data 6/7."""
+    one_of_one = combine_score(0.5, skill_score(1, 1, 2.0), 0.6)
+    six_of_seven = combine_score(0.5, skill_score(6, 7, 2.0), 0.6)
+    assert six_of_seven > one_of_one
+    assert combine_score(0.5, skill_score(1, 1, 0.0), 0.6) > six_of_seven  # tanpa prior
+
+
+def test_combine_score_is_weighted_average():
     assert combine_score(0.5, 1.0, 0.6) == pytest.approx(0.7)
+    assert combine_score(0.4, 0.0, 1.0) == pytest.approx(0.4)
 
 
 def test_match_jobs_ranks_by_combined_score(jobs_db):
@@ -144,18 +167,33 @@ def test_match_jobs_ranks_by_combined_score(jobs_db):
     assert [m.job_id for m in result.matches] == [1, 5, 3]
 
     first, second, third = result.matches
-    assert first.semantic == pytest.approx(0.55)
-    assert first.semantic_scaled == pytest.approx(0.75)
+    assert first.semantic == pytest.approx(0.60)  # default max: chunk terbaik
+    assert first.semantic_scaled == pytest.approx(0.875)
     assert first.skill_portion == 1.0
-    assert first.score == pytest.approx(0.6 * 0.75 + 0.4 * 1.0)
+    assert first.skill_score == pytest.approx(2 / 4)
+    assert first.score == pytest.approx(0.6 * 0.875 + 0.4 * 0.5)
     assert first.matched_skills == ["Python", "SQL"]  # Python disebut 2 lowongan, SQL 1
     assert first.job_title == "Data Analyst"
     assert first.salary_min == 8_000_000
 
     assert second.skill_portion == 0.5
+    assert second.skill_score == pytest.approx(1 / 4)
     assert second.missing_skills == ["REST API"]
     assert third.skill_portion is None
-    assert third.score == pytest.approx(third.semantic_scaled)
+    assert third.skill_score == 0.0
+    assert third.score == pytest.approx(0.6 * third.semantic_scaled)
+
+
+def test_match_jobs_mean_aggregation(jobs_db):
+    result = match_jobs(
+        make_profile(),
+        embeddings=FakeEmbeddings(),
+        vector_store=VectorStoreByVector(CHUNKS),
+        db_path=jobs_db,
+        config=MatchConfig(aggregation="mean"),
+    )
+    assert result.matches[0].job_id == 1
+    assert result.matches[0].semantic == pytest.approx(0.55)
 
 
 def test_match_jobs_embeds_profile_summary_once_and_passes_k(jobs_db):

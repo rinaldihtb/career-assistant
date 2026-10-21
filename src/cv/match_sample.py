@@ -2,18 +2,20 @@
 
     make sample-match ARGS=~/Downloads/CV.pdf
 
-Biaya: 1 panggilan LLM (profil) + 2 embedding (ringkasan profil dan teks CV) + 5 query
+Biaya: 1 panggilan LLM (profil) + 2 embedding (ringkasan profil dan teks CV) + 6 query
 Qdrant. Yang dicetak hanya angka, ID, dan judul lowongan; teks CV, nama, dan daftar skill
 tidak dicetak dan tidak ada yang ditulis ke disk.
 
-Yang diukur:
-- 4 konfigurasi (ringkasan profil vs teks CV) x (mean top-3 vs max), plus k=800 untuk
-  memeriksa apakah k=400 sudah cukup (top-10 harus sama).
-- Distribusi skor cosine hasil agregasi (peringkat 1, 10, 50) untuk menentukan
+Yang diukur per konfigurasi:
+- Proxy relevansi: berapa dari top-10 yang judulnya data/AI/software (``TITLE_PROXY``,
+  85 dari 473 lowongan). Hanya cocok untuk CV data/AI; set eval C1d memakai gold per CV.
+- Distribusi cosine semua lowongan kandidat (maks, p90, p50) untuk menentukan
   ``semantic_floor`` dan ``semantic_ceiling``.
+- Kestabilan terhadap ``k``: top-10 default dengan k=800 harus sama dengan k=400.
 """
 
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,15 +29,26 @@ from cv.skills import build_cv_skills
 
 load_dotenv()
 DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
-STATS_LIMIT = 50
+ALL = 1000  # ambil semua kandidat agar distribusi cosine lengkap
 SHOW = 10
+TITLE_PROXY = re.compile(
+    r"\b(data|ai|ml|machine learning|python|software|developer|programmer|scientist)\b",
+    re.IGNORECASE,
+)
 CONFIGS = {
-    "A profil+mean": MatchConfig(limit=STATS_LIMIT),
-    "B profil+max": MatchConfig(aggregation="max", limit=STATS_LIMIT),
-    "C cvtext+mean": MatchConfig(query="cv_text", limit=STATS_LIMIT),
-    "D cvtext+max": MatchConfig(query="cv_text", aggregation="max", limit=STATS_LIMIT),
-    "A k=800": MatchConfig(k=800, limit=STATS_LIMIT),
+    "A default (max, prior 2)": MatchConfig(limit=ALL),
+    "B max, prior 0": MatchConfig(skill_prior=0, limit=ALL),
+    "C semantik saja": MatchConfig(semantic_weight=1.0, limit=ALL),
+    "D teks CV, prior 2": MatchConfig(query="cv_text", limit=ALL),
+    "E mean, prior 2": MatchConfig(aggregation="mean", limit=ALL),
+    "A k=800": MatchConfig(k=800, limit=ALL),
 }
+
+
+def percentile(values: list[float], q: float) -> float:
+    """Persentil sederhana (nearest-rank) dari daftar yang belum tentu terurut."""
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
 
 
 def main(paths: list[str]) -> int:
@@ -79,21 +92,24 @@ def main(paths: list[str]) -> int:
             vectors[config.query], cv_skills, vector_store=VECTOR_DB, db_path=DB_PATH, config=config
         )
         elapsed = time.perf_counter() - started
-        raw = [m.semantic for m in matches]
-        ids = [m.job_id for m in matches[:SHOW]]
+        top = matches[:SHOW]
+        ids = [m.job_id for m in top]
         baseline = baseline or ids
-        rank = {i: f"{raw[i - 1]:.3f}" if len(raw) >= i else "-" for i in (1, 10, 50)}
+        cosines = [m.semantic for m in matches]
+        relevant = sum(1 for m in top if TITLE_PROXY.search(m.job_title))
         print(f"\n=== {name}: {chunks} chunk, {unique} lowongan, {elapsed:.2f} dtk")
-        print(f"cosine agregat peringkat 1/10/50: {rank[1]} / {rank[10]} / {rank[50]}")
+        print(f"proxy relevan top-{SHOW}: {relevant}/{SHOW}")
+        print(
+            f"cosine kandidat maks/p90/p50: {max(cosines):.3f} / "
+            f"{percentile(cosines, 0.9):.3f} / {percentile(cosines, 0.5):.3f}"
+        )
         print(f"top-{SHOW} sama dengan A: {len(set(ids) & set(baseline))}/{SHOW}")
-        no_skill = sum(1 for m in matches[:SHOW] if m.skill_portion is None)
-        print(f"top-{SHOW} tanpa skill kosakata: {no_skill}")
-        for i, m in enumerate(matches[:SHOW], start=1):
-            portion = "-" if m.skill_portion is None else f"{m.skill_portion:.2f}"
+        for i, m in enumerate(top, start=1):
+            mark = "*" if TITLE_PROXY.search(m.job_title) else " "
             required = len(m.matched_skills) + len(m.missing_skills)
             print(
-                f"{i:2}. #{m.job_id:<3} {m.score:4.0%} cos={m.semantic:.3f} "
-                f"skill={portion} ({len(m.matched_skills)}/{required})  "
+                f"{i:2}.{mark}#{m.job_id:<3} {m.score:4.0%} cos={m.semantic:.3f} "
+                f"skill={m.skill_score:.2f} ({len(m.matched_skills)}/{required})  "
                 f"{m.job_title[:45]} | {(m.company_name or '-')[:25]}"
             )
     return 0
