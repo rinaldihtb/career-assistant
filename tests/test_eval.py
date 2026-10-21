@@ -190,6 +190,17 @@ def test_check_rag_groups_and_off_topic():
     assert "tidak relevan: [3]" in check_rag(groups, [1, 2, 3], jobs).detail
 
 
+def test_check_rag_location_none_rejects_excluded_city():
+    jobs = {
+        1: {"job_title": "Sales Executive", "location": "Jakarta Selatan, Jakarta Raya"},
+        2: {"job_title": "Sales", "location": "Surabaya, Jawa Timur"},
+    }
+    groups = [{"title_any": ["sales"], "location_none": ["jakarta"], "min_ids": 1}]
+    assert check_rag(groups, [2], jobs).passed
+    assert "tidak relevan: [1]" in check_rag(groups, [1, 2], jobs).detail
+    assert "grup 1: 0 cocok" in check_rag(groups, [1], jobs).detail
+
+
 def test_check_rag_by_description():
     jobs = {5: {"job_title": "Backend", "job_description": "Python dan SQL", "location": "-"}}
     assert check_rag([{"desc_any": ["python"], "min_ids": 1}], [5], jobs).passed

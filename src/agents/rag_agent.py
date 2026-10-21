@@ -2,9 +2,11 @@
 
 Alur ``run_rag_agent`` (0 atau 1 panggilan LLM chat):
     1. ``retrieve_jobs`` (tanpa LLM chat, hanya embedding query):
-       a. Deteksi lokasi dengan kamus nama tempat dari kolom ``location`` SQLite.
-       b. Qdrant ``k`` chunk; jika ada lokasi, difilter ``metadata.job_id`` (MatchAny)
-          dan nama tempat dibuang dari teks yang di-embed.
+       a. Deteksi lokasi dengan kamus nama tempat dari kolom ``location`` SQLite;
+          lokasi setelah "selain/kecuali/di luar/bukan" dianggap pengecualian.
+       b. Qdrant ``k`` chunk; jika ada lokasi, difilter ``metadata.job_id`` (MatchAny:
+          lokasi yang diminta dikurangi lokasi yang dikecualikan) dan nama tempat
+          dibuang dari teks yang di-embed.
        c. Buang chunk sangat pendek, dedupe per ``job_id`` (chunk skor tertinggi),
           buang skor < threshold (hanya jika TIDAK ada filter lokasi), ambil ``top_n``.
        d. Detail lowongan dari SQLite berdasarkan ID.
@@ -73,7 +75,8 @@ class RetrievalResult(BaseModel):
     """Hasil pencarian lowongan sebelum dijawab LLM.
 
     Attributes:
-        places: Kunci lokasi yang terdeteksi di pertanyaan (huruf kecil).
+        places: Kunci lokasi yang diminta di pertanyaan (huruf kecil).
+        excluded_places: Kunci lokasi yang dikecualikan ("selain Jakarta" -> ``["jakarta"]``).
         search_query: Teks yang benar-benar di-embed (pertanyaan tanpa nama tempat
             jika filter lokasi aktif).
         jobs: Lowongan terpilih, urut skor tertinggi. Setiap dict berisi kolom
@@ -85,6 +88,7 @@ class RetrievalResult(BaseModel):
     """
 
     places: list[str] = Field(default_factory=list)
+    excluded_places: list[str] = Field(default_factory=list)
     search_query: str = ""
     jobs: list[dict[str, Any]] = Field(default_factory=list)
     chunks_found: int = 0
@@ -161,6 +165,44 @@ def detect_places(question: str, place_index: dict[str, set[int]]) -> list[str]:
             found.append(key)
             text = pattern.sub(" ", text)
     return found
+
+
+# Kata sebelum nama tempat yang membalik maknanya: "selain Jakarta", "di luar Bandung",
+# "kecuali di Bali", "bukan dari Surabaya". Tanpa ini, filter lokasi justru membatasi
+# kandidat ke kota yang ingin dihindari (bug uji manual 20 Okt 2026).
+EXCLUSION_PREFIX = r"(?:selain|kecuali|di\s+luar|bukan)\s+(?:(?:di|dari)\s+)?"
+
+
+def split_excluded_places(question: str, places: Iterable[str]) -> tuple[list[str], list[str]]:
+    """Pisahkan kunci tempat menjadi ``(diminta, dikecualikan)``.
+
+    Kenapa regex, bukan LLM: pengecualian lokasi di pertanyaan pengguna hampir
+    selalu memakai empat kata ini tepat sebelum nama tempat, jadi pencocokan
+    teks cukup, gratis, dan bisa dites. Batasan yang disengaja: hanya tempat
+    yang langsung didahului kata pengecualian; "selain Jakarta dan Bandung"
+    hanya mengecualikan Jakarta.
+    """
+    included: list[str] = []
+    excluded: list[str] = []
+    for key in places:
+        words = r"\s+".join(map(re.escape, key.split()))
+        pattern = re.compile(rf"(?<!\w){EXCLUSION_PREFIX}{words}(?!\w)", re.IGNORECASE)
+        (excluded if pattern.search(question) else included).append(key)
+    return included, excluded
+
+
+def allowed_job_ids(
+    place_index: dict[str, set[int]], included: Iterable[str], excluded: Iterable[str]
+) -> set[int]:
+    """ID lowongan yang lolos filter lokasi: lokasi diminta dikurangi lokasi dikecualikan.
+
+    Jika hanya ada pengecualian ("lowongan selain di Jakarta"), titik awalnya
+    semua lowongan yang punya lokasi.
+    """
+    included = list(included)
+    keys = included or list(place_index)
+    allowed = set().union(*(place_index[key] for key in keys))
+    return allowed - set().union(*(place_index[key] for key in excluded))
 
 
 def remove_places(question: str, places: Iterable[str]) -> str:
@@ -384,13 +426,16 @@ def retrieve_jobs(
             melempar exception" tetap terjaga.
     """
     place_index = build_place_index(get_job_locations(db_path))
-    places = detect_places(question, place_index)
+    detected = detect_places(question, place_index)
+    places, excluded = split_excluded_places(question, detected)
     qdrant_filter = None
     search_query = question
-    if places:
-        place_job_ids = set().union(*(place_index[key] for key in places))
-        qdrant_filter = build_job_id_filter(place_job_ids)
-        search_query = remove_places(question, places)
+    if detected:
+        job_ids = allowed_job_ids(place_index, places, excluded)
+        if not job_ids:
+            return RetrievalResult(places=places, excluded_places=excluded, search_query=question)
+        qdrant_filter = build_job_id_filter(job_ids)
+        search_query = remove_places(question, detected)
 
     chunks = vector_store.similarity_search_with_score(search_query, k=k, filter=qdrant_filter)
 
@@ -405,7 +450,7 @@ def retrieve_jobs(
             best[int(job_id)] = (float(score), doc.page_content)
 
     ranked = sorted(best.items(), key=lambda item: item[1][0], reverse=True)
-    if places:
+    if qdrant_filter is not None:
         passed = ranked
     else:
         passed = [(job_id, hit) for job_id, hit in ranked if hit[0] >= score_threshold]
@@ -418,6 +463,7 @@ def retrieve_jobs(
 
     return RetrievalResult(
         places=places,
+        excluded_places=excluded,
         search_query=search_query,
         jobs=jobs,
         chunks_found=len(chunks),
