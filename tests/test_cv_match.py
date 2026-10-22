@@ -168,10 +168,10 @@ def test_match_jobs_ranks_by_combined_score(jobs_db):
 
     first, second, third = result.matches
     assert first.semantic == pytest.approx(0.60)  # default max: chunk terbaik
-    assert first.semantic_scaled == pytest.approx(0.875)
+    assert first.semantic_scaled == pytest.approx(0.6)  # (0.60 - 0.45) / (0.70 - 0.45)
     assert first.skill_portion == 1.0
     assert first.skill_score == pytest.approx(2 / 4)
-    assert first.score == pytest.approx(0.6 * 0.875 + 0.4 * 0.5)
+    assert first.score == pytest.approx(0.6 * 0.6 + 0.4 * 0.5)
     assert first.matched_skills == ["Python", "SQL"]  # Python disebut 2 lowongan, SQL 1
     assert first.job_title == "Data Analyst"
     assert first.salary_min == 8_000_000

@@ -36,7 +36,7 @@ test:
 	$(PYTHON) -m pytest
 
 lint:
-	$(PYTHON) -m ruff check src/agents src/repositories src/models tests
+	$(PYTHON) -m ruff check src/agents src/repositories src/models src/cv src/evaluation tests
 
 sample-sql:
 	PYTHONPATH=.:src $(PYTHON) -m agents.sql_sample
@@ -70,3 +70,8 @@ sample-cv:
 
 sample-match:
 	PYTHONPATH=.:src $(PYTHON) -m cv.match_sample $(ARGS)
+
+.PHONY: eval-cv
+
+eval-cv:
+	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_cv_eval $(ARGS)

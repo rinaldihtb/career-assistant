@@ -17,7 +17,11 @@ Kenapa ringkasan profil sebagai default: profil bisa dikoreksi pengguna di UI, d
 "Cocokkan ulang" hanya bermakna jika koreksi itu ikut di-embed. Ringkasan juga tidak
 memuat nama atau kontak. Teks CV mentah tetap tersedia (``query="cv_text"``) untuk diukur.
 
-Nilai default ``MatchConfig`` bersifat sementara sampai diukur di set eval Cocokkan CV.
+Nilai default ``MatchConfig`` diukur dengan set eval Cocokkan CV (tests/eval/cv_cases.yaml v1.1,
+5 CV fiktif, run cv-c1d-20261021-2130): precision@5 dan @10 = 1.00 untuk kelima CV. Default
+berada di tengah dataran: query profil + ``max`` dengan ``skill_prior`` 1-3 dan
+``semantic_weight`` 0.4-0.7 sama-sama 1.00/1.00 (12 dari 80 konfigurasi grid). ``skill_prior``
+0 dan query teks CV tidak pernah mencapai 1.00/1.00.
 """
 
 from collections import Counter, defaultdict
@@ -50,8 +54,12 @@ class MatchConfig(BaseModel):
         semantic_weight: Bobot komponen semantik; sisanya untuk skor skill.
         skill_prior: Penambah penyebut skor skill; makin besar, makin sedikit pengaruh
             lowongan yang hanya menyebut 1-2 skill. ``0`` = porsi mentah.
-        semantic_floor: Skor cosine yang dianggap 0%.
-        semantic_ceiling: Skor cosine yang dianggap 100%.
+        semantic_floor: Skor cosine yang dianggap 0%: median cosine kandidat terendah di antara
+            CV set eval (0,494), dibulatkan ke bawah ke kelipatan 0,05.
+        semantic_ceiling: Skor cosine yang dianggap 100%: cosine teratas tertinggi di antara CV
+            set eval (0,707), dibulatkan ke bawah. Skor teratas set eval menjadi 71-89%
+            (batas lama 0,25-0,65: 84-92%, hampir semua lowongan tampak sangat cocok);
+            urutan lowongan tidak berubah.
         limit: Jumlah lowongan yang dikembalikan.
     """
 
@@ -61,8 +69,8 @@ class MatchConfig(BaseModel):
     k: int = Field(default=400, ge=1)
     semantic_weight: float = Field(default=0.6, ge=0.0, le=1.0)
     skill_prior: float = Field(default=2.0, ge=0.0)
-    semantic_floor: float = 0.25
-    semantic_ceiling: float = 0.65
+    semantic_floor: float = 0.45
+    semantic_ceiling: float = 0.70
     limit: int = Field(default=10, ge=1)
 
 
