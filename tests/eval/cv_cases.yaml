@@ -1,0 +1,203 @@
+# Set eval Cocokkan CV (Tugas C1d): 5 CV fiktif untuk mengunci MatchConfig.
+#
+# v1.0 (21 Okt 2026).
+# v1.1 (21 Okt 2026): gold judul ditambah extra_ids (cacat objektif: lowongan yang deskripsinya
+#      meminta pengalaman bidang CV tetapi judulnya tidak tertangkap regex, mis. #51 "Branch
+#      Operation Analyst" = "Pengalaman sebagai data analyst"). Dinilai dengan POOLING: semua
+#      lowongan non-gold yang masuk top-10 di salah satu dari 86 konfigurasi run
+#      cv-c1d-20261021-2130 (19 lowongan) dibaca deskripsinya; 8 relevan (extra_ids), 11 tidak
+#      (not_relevant_ids). G5 v1.0 ("Corporate Planning tidak") diputuskan tanpa membaca
+#      deskripsi dan ternyata salah. Run lama dinilai ulang: run_cv_eval --rescore <file.json>.
+# CV di tests/eval/cv/ dibuat dengan reportlab dari teks karangan: nama, kontak (example.com,
+# +62 812-0000-xxxx), dan perusahaan fiktif; setiap halaman berfooter "Dokumen fiktif".
+# Template: 1 kolom (cv01, cv05 dua halaman), 2 kolom sidebar (cv02), gaya Canva (cv03: kotak
+# teks ditulis berselang kiri-kanan dan judul huruf per huruf, sehingga di teks hasil pypdf
+# pengalaman kedua muncul setelah bagian BAHASA), 2 kolom tabel (cv04).
+#
+# GOLD LOWONGAN: judul yang cocok title_include dan TIDAK cocok title_exclude (regex Python,
+# tanpa membedakan huruf besar/kecil) di tabel jobs. Relevan = posisi yang wajar dilamar
+# pemilik CV dengan skill dan pengalaman di CV-nya. gold_count = jumlah gold judul + extra_ids,
+# dicek ulang setiap run; jika berbeda (database di-seed ulang), skrip mencetak peringatan.
+#
+# PENILAIAN MANUAL (extra_ids / not_relevant_ids): relevan jika tugas utama atau persyaratan
+# pengalaman lowongan sama dengan bidang pengalaman kerja di CV. Senioritas tidak dinilai (gold
+# judul juga memuat Manager/Direktur). Lowongan non-gold di top-10 yang belum ada di kedua daftar
+# ditandai "?" oleh skrip dan harus dinilai dengan kriteria yang sama.
+#
+# KEPUTUSAN GOLD:
+# G1 cv01 Data Analyst: Data Engineer, Data Scientist, Business Analyst, Statistical Officer
+#    relevan (SQL, ETL, BigQuery, statistik ada di CV). Software Engineer/Developer tidak
+#    (CV tanpa skill pengembangan perangkat lunak). Dibuang: Junior Graphic Designer
+#    (AI-Assisted), HRD (People Analytics), HR Data & Travel, Data Collector, Dosen.
+# G2 cv02 Graphic Designer: semua judul desain grafis/visual/multimedia/creative designer,
+#    termasuk ejaan Indonesia (desain grafis, desainer grafis).
+# G3 cv03 HR Generalist: semua judul HR/HRD/HRGA/Human Resources/Human Capital/HC/recruitment/
+#    talent acquisition/personalia/payroll/People & Culture.
+# G4 cv04 Sales & Marketing (B2B): judul sales, marketing, business development, account
+#    manager. Digital Marketing, Social Media, dan E-commerce TIDAK relevan (CV tanpa
+#    SEO/Ads/konten). Kasus ini menguji skill umum "Marketing", "Communication", "English".
+# G5 cv05 Financial Analyst: finance, accounting, treasury, investment, budget, FP&A, general
+#    ledger, costing, credit analyst. Corporate Planning/Business Analyst lewat judul tidak
+#    (judul itu juga dipakai untuk peran non-keuangan), tetapi dinilai per lowongan (v1.1).
+#
+# GOLD PROFIL (hanya dilaporkan, tidak dipakai memilih konfigurasi):
+# skills: isi bagian Skills/Keahlian/Software dan bahasa asing, ditulis seperti di CV. Item
+#   berupa daftar = varian yang dianggap sama. Cocok jika sama setelah normalisasi, atau salah
+#   satu memuat yang lain utuh per kata ("Rekrutmen" cocok dengan "Rekrutmen & Seleksi").
+#   Bahasa Indonesia tidak masuk gold (bukan bahasa asing; jika diekstrak, tidak dihitung salah).
+# education_level: jenjang tertinggi. experiences: jumlah pekerjaan/magang/freelance.
+version: "1.1"
+cases:
+  - id: cv01
+    file: tests/eval/cv/cv01_data_analyst.pdf
+    field: data/AI
+    template: 1 kolom
+    title_include: '\bdata\b|analytics|\banalis\b|scientist|business analyst|statistic'
+    title_exclude: 'graphic|\bhrd?\b|collector|dosen'
+    extra_ids: [51]  # Branch Operation Analyst: "pengalaman sebagai data analyst", SQL, Power BI
+    not_relevant_ids: [110]  # Personal Assistant
+    gold_count: 56
+    profile:
+      education_level: S1
+      experiences: 2
+      skills:
+        - SQL
+        - Python
+        - Pandas
+        - NumPy
+        - Excel
+        - Google Sheets
+        - Power BI
+        - Tableau
+        - Looker Studio
+        - BigQuery
+        - ETL
+        - A/B Testing
+        - Data Visualization
+        - Data Cleaning
+        - Statistical Analysis
+        - English
+
+  - id: cv02
+    file: tests/eval/cv/cv02_graphic_designer.pdf
+    field: graphic designer
+    template: 2 kolom sidebar
+    title_include: 'graphic|grafis|\bdesigner\b|\bdesain|creative design|design graphic|multimedia'
+    title_exclude: ''
+    extra_ids:
+      - 172  # Kepala Digital Marketing: "pengalaman sebagai Art Director, Senior Graphic Designer"
+      - 194  # Social Media & DM Specialist: "pengalaman spesialis design logo, banner", portofolio
+    not_relevant_ids: []
+    gold_count: 66
+    profile:
+      education_level: S1
+      experiences: 3
+      skills:
+        - Adobe Photoshop
+        - Adobe Illustrator
+        - Adobe InDesign
+        - CorelDRAW
+        - Figma
+        - Canva
+        - Adobe Premiere Pro
+        - After Effects
+        - Branding
+        - Typography
+        - Layout Design
+        - Motion Graphics
+        - Video Editing
+        - Social Media Content
+        - English
+
+  - id: cv03
+    file: tests/eval/cv/cv03_hr_generalist.pdf
+    field: HR
+    template: gaya Canva
+    title_include: '\bhr|human r|human cap|\bhc\b|recruit|talent acq|personalia|personnel|people &|payroll'
+    title_exclude: ''
+    extra_ids: []
+    not_relevant_ids: []
+    gold_count: 66
+    profile:
+      education_level: S1
+      experiences: 2
+      skills:
+        - Rekrutmen & Seleksi
+        - Payroll
+        - HRIS (Talenta)
+        - UU Ketenagakerjaan
+        - Employee Relations
+        - Onboarding
+        - Manajemen Kinerja (KPI)
+        - BPJS Ketenagakerjaan
+        - Microsoft Excel
+        - Microsoft Office
+        - [Inggris, Bahasa Inggris, English]
+
+  - id: cv04
+    file: tests/eval/cv/cv04_sales_marketing.pdf
+    field: sales/marketing
+    template: 2 kolom tabel
+    title_include: '\bsales\b|marketing|business development|account manager'
+    title_exclude: 'digital|social media|e-?commerce'
+    extra_ids:
+      - 290  # Product Manager: "pengalaman penjualan/marketing min 2 th, alat kedokteran"
+      - 299  # B to C Product Manager: "minimum 5 years of experience in Sales & Marketing"
+    not_relevant_ids:
+      - 110  # Personal Assistant
+      - 160  # Digital Marketing & Growth Manager (G4)
+      - 178  # Full-Stack Digital Marketing Specialist (G4)
+      - 198  # Digital Marketing Lead (G4)
+      - 335  # Asst. Product Manager: syarat pengalaman sebagai (Asst.) Product Manager
+    gold_count: 79
+    profile:
+      education_level: S1
+      experiences: 2
+      skills:
+        - Marketing
+        - Sales
+        - Communication
+        - Negotiation
+        - English
+        - Business Development
+        - Market Research
+        - CRM
+        - Customer Service
+        - Public Speaking
+        - Microsoft Office
+        - Teamwork
+
+  - id: cv05
+    file: tests/eval/cv/cv05_financial_analyst.pdf
+    field: finance
+    template: 1 kolom, 2 halaman
+    title_include: 'financ|accounting|treasury|investment|budget|fp&a|general ledger|costing|credit analyst'
+    title_exclude: ''
+    extra_ids:
+      - 425  # Corporate Planning Analyst: budgeting, forecasting, financial modelling
+      - 460  # Corporate Business Analyst Staff: analisis laporan keuangan, S1 Akuntansi/Keuangan
+      - 467  # Corporate Planning: RKA/anggaran, prognosa, model keuangan
+    not_relevant_ids:
+      - 6  # Data Analyst
+      - 12  # Data Analis (purchasing)
+      - 14  # Data Analyst (riset kompetitor)
+      - 110  # Personal Assistant
+      - 344  # Branch Office Manager: syarat pengalaman sebagai Branch Office Manager 3 tahun
+    gold_count: 46
+    profile:
+      education_level: S1
+      experiences: 2
+      skills:
+        - Analisis Keuangan
+        - Financial Modeling
+        - Budgeting
+        - Forecasting
+        - Laporan Keuangan (PSAK)
+        - Variance Analysis
+        - Valuasi (DCF)
+        - Microsoft Excel (VBA)
+        - Power BI
+        - SAP FI/CO
+        - Perpajakan (PPh & PPN)
+        - Accurate
+        - [Inggris, Bahasa Inggris, English]

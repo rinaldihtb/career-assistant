@@ -164,15 +164,22 @@ def _contains_any(text: str, phrases: Iterable[str]) -> list[str]:
 
 
 def _job_matches(job: Mapping[str, Any], group: Mapping[str, Any]) -> bool:
-    """Satu lowongan cocok dengan grup RAG (kata kunci judul/deskripsi dan lokasi)."""
+    """Satu lowongan cocok dengan grup RAG (kata kunci judul/deskripsi dan lokasi).
+
+    ``location_none`` dicek sebelum ``location_any``: lowongan di lokasi yang
+    dikecualikan pengguna ("selain Jakarta") dihitung tidak relevan.
+    """
     if "title_any" in group:
         text, keywords = job.get("job_title") or "", group["title_any"]
     else:
         text, keywords = job.get("job_description") or "", group["desc_any"]
     if not _contains_any(text, keywords):
         return False
+    location = job.get("location") or ""
+    if _contains_any(location, group.get("location_none", [])):
+        return False
     locations = group.get("location_any")
-    return not locations or bool(_contains_any(job.get("location") or "", locations))
+    return not locations or bool(_contains_any(location, locations))
 
 
 # --- Pemeriksaan per jenis ---------------------------------------------------

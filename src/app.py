@@ -21,11 +21,19 @@ job_search_page = st.Page(
     icon="🔎",
 )
 
+cv_match_page = st.Page(
+    "pages/cvmatch.page.py",
+    title="Cocokkan CV",
+    icon="📄",
+)
+
 assistant_page = st.Page(
     "pages/assistant_page.py",
     title="Asisten Karier",
     icon="💬",
 )
 
-navigation = st.navigation([home_page, job_search_page, assistant_page], position="hidden")
+navigation = st.navigation(
+    [home_page, job_search_page, cv_match_page, assistant_page], position="hidden"
+)
 navigation.run()
