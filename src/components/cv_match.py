@@ -21,11 +21,11 @@ from typing import Any
 
 import streamlit as st
 
-from agents.rag_agent import format_salary
 from components.job_description import description_to_markdown, escape_markdown
 from cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
 from cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
 from cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
+from helpers.format import format_salary
 from repositories.job_repository import get_jobs_by_ids
 
 logger = logging.getLogger(__name__)
