@@ -206,6 +206,30 @@ def test_no_salary_sentence_comes_from_column_not_llm(jobs_db, fake_llm):
     assert result.answer == "- [ID:4] A\n- [ID:1] B\n\n" + SQL_NO_SALARY_NOTE.format(count=2)
 
 
+def test_salary_count_sentence_removed_from_job_list(jobs_db, fake_llm):
+    llm = fake_llm(
+        _sql_block(_SALARY_LIST_SQL),
+        "- [ID:4] A\n- [ID:1] B\n\nX dari 4 lowongan mencantumkan gaji.\n\n2 lowongan lain tidak "
+        "mencantumkan gaji.",
+    )
+    result = run_sql_agent("Lowongan gaji di atas 9 juta", llm=llm, db_path=jobs_db)
+
+    assert result.answer == "- [ID:4] A\n- [ID:1] B\n\n" + SQL_NO_SALARY_NOTE.format(count=2)
+
+
+def test_salary_count_sentence_kept_for_salary_statistics(jobs_db, fake_llm):
+    llm = fake_llm(
+        _sql_block(
+            "SELECT AVG(salary_min) AS rata_gaji_min, AVG(salary_max) AS rata_gaji_max, "
+            "COUNT(salary_min) AS lowongan_dengan_gaji, COUNT(*) AS total_lowongan FROM jobs"
+        ),
+        "Rata-rata Rp10.000.000 - Rp13.000.000.\n\n3 dari 6 lowongan mencantumkan gaji.",
+    )
+    result = run_sql_agent("Rata-rata gaji semua lowongan", llm=llm, db_path=jobs_db)
+
+    assert result.answer.endswith("3 dari 6 lowongan mencantumkan gaji.")
+
+
 def test_answer_without_list_or_zero_no_salary_is_unchanged(jobs_db, fake_llm):
     llm = fake_llm(
         _sql_block(

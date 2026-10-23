@@ -2,6 +2,9 @@
 #
 # v1.1 (19 Okt 2026): ejaan Indonesia ikut dihitung (ID 12 "Data Analis", Jakarta, tanpa gaji).
 # Total data analyst Jakarta 16 -> 17. Run lama dinilai ulang dengan: run_eval --rescore <file.json>
+# v1.2 (20 Okt 2026): T14 pengecualian lokasi ("selain/di luar Jakarta"), dari bug uji manual UI.
+#      T14-01 diberi sql_values (Tangerang, Banten = 28): dengan answer_any saja, jawaban RAG
+#      berisi 5 lowongan acak di luar Jakarta ikut lulus (run b31-planner).
 #
 # KEPUTUSAN REQUIREMENT (berlaku untuk semua kasus):
 # R1 Rentang gaji = BERIRISAN. "gaji 5-8 jt" -> salary_min <= 8000000 AND salary_max >= 5000000.
@@ -14,6 +17,8 @@
 # R6 Maksimal 3 sub-tugas. Sisanya disebut dan pengguna diminta bertanya terpisah.
 # R7 Pencocokan posisi: lower(job_title) LIKE '%frasa%' (pola SQL agent), ejaan Indonesia dan Inggris
 #    sama-sama dihitung (analyst/analis, design/desain). Kota: lower(location) LIKE '%kota%'.
+# R8 Pengecualian lokasi: "selain X", "di luar X", "kecuali X" -> lower(location) NOT LIKE '%x%'.
+#    "Di mana saja ..." = sebaran lokasi (SQL GROUP BY location), bukan pencarian RAG.
 #
 # FORMAT KASUS
 # id, category (T1a..T13), question, history (opsional, format st.session_state, TANPA pertanyaan saat ini)
@@ -26,8 +31,9 @@
 #   sql_values : daftar gold SQL. Setiap sel angka non-NULL hasilnya wajib muncul di jawaban
 #                (angka di jawaban dinormalisasi: Rp6.812.500 -> 6812500; toleransi 1%).
 #   sql_ids    : gold SQL berkolom id. Himpunan ID yang dikutip [ID:x] dari sub-tugas SQL == hasil gold.
-#   rag        : daftar grup {title_any | desc_any, location_any?, min_ids}. Tiap grup dipenuhi minimal
-#                min_ids ID yang dikutip; setiap ID dari RAG wajib cocok dengan minimal satu grup.
+#   rag        : daftar grup {title_any | desc_any, location_any?, location_none?, min_ids}. Tiap grup
+#                dipenuhi minimal min_ids ID yang dikutip; setiap ID dari RAG wajib cocok dengan minimal
+#                satu grup. location_none: lokasi lowongan TIDAK boleh memuat frasa mana pun.
 #   no_ids     : true -> jawaban tidak mengutip ID apa pun.
 #   answer_any : minimal satu frasa muncul di jawaban (case-insensitive).
 #   answer_none: tidak satu pun frasa muncul di jawaban.
@@ -40,7 +46,7 @@
 # Batas panggilan LLM: planner 1 + per sub-tugas (SQL <= 3, RAG <= 1) + sintesis <= 1 jika sub-tugas > 1.
 # Kasus tanpa agent: <= 1.
 
-version: "1.1"
+version: "1.2"
 
 cases:
   # --- T1a: tunggal SQL, statistik ------------------------------------------
@@ -775,3 +781,34 @@ cases:
         - desc_any: [python]
           min_ids: 1
       answer_any: [terpisah, tanyakan lagi, tanyakan ulang, pertanyaan berikutnya]
+
+  # --- T14: pengecualian lokasi ----------------------------------------------
+  - id: T14-01
+    category: T14
+    question: di mana saja loker selain di jakarta?
+    expected:
+      response: answer
+      agents: [sql]
+      subtasks: [sebaran lowongan per lokasi, kecuali Jakarta]
+    criteria: >-
+      Satu sub-tugas SQL GROUP BY location dengan NOT LIKE jakarta; lokasi teratas Tangerang (28),
+      Surabaya (17). Bukan "tidak ada lowongan", tidak ada bagian ganda.
+    checks:
+      sql_values:
+        - SELECT COUNT(*) FROM jobs WHERE location = 'Tangerang, Banten'
+      answer_any: [tangerang]
+      answer_none: [tidak ada lowongan]
+
+  - id: T14-02
+    category: T14
+    question: Carikan lowongan sales selain di Jakarta
+    expected:
+      response: answer
+      agents: [rag]
+      subtasks: [cari sales di luar Jakarta]
+    criteria: Kartu lowongan sales yang lokasinya bukan Jakarta (27 lowongan sales di luar Jakarta).
+    checks:
+      rag:
+        - title_any: [sales]
+          location_none: [jakarta]
+          min_ids: 1

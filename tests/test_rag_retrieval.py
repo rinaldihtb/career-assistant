@@ -11,11 +11,13 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_qdrant import QdrantVectorStore
 
 from agents.rag_agent import (
+    allowed_job_ids,
     build_job_id_filter,
     build_place_index,
     detect_places,
     remove_places,
     retrieve_jobs,
+    split_excluded_places,
 )
 from repositories.job_repository import get_job_locations, get_jobs_by_ids
 
@@ -116,6 +118,51 @@ def test_dedupe_keeps_best_chunk_per_job(jobs_db, fake_vector_store):
     assert result.chunks_found == 6
     assert result.unique_jobs == 5
     assert result.below_threshold == 2
+
+
+@pytest.mark.parametrize(
+    ("question", "places", "expected"),
+    [
+        ("Lowongan selain di Jakarta", ["jakarta"], ([], ["jakarta"])),
+        ("loker di luar jakarta", ["jakarta"], ([], ["jakarta"])),
+        ("Lowongan admin kecuali Bandung", ["bandung"], ([], ["bandung"])),
+        ("Lowongan bukan dari Surabaya", ["surabaya"], ([], ["surabaya"])),
+        ("Lowongan di Jakarta", ["jakarta"], (["jakarta"], [])),
+        (
+            "Lowongan di Surabaya, selain Jakarta",
+            ["surabaya", "jakarta"],
+            (["surabaya"], ["jakarta"]),
+        ),
+    ],
+)
+def test_split_excluded_places(question, places, expected):
+    assert split_excluded_places(question, places) == expected
+
+
+def test_allowed_job_ids_subtracts_excluded(place_index):
+    assert allowed_job_ids(place_index, [], ["jakarta"]) == {2, 3, 5}  # semua yang berlokasi
+    assert allowed_job_ids(place_index, ["jawa"], ["bandung"]) == {2}
+    assert allowed_job_ids(place_index, ["jakarta"], []) == {1, 4, 6}
+
+
+def test_excluded_place_filters_out_that_city(jobs_db, fake_vector_store):
+    store = fake_vector_store(CHUNKS)
+    result = retrieve_jobs("lowongan data selain di Jakarta", vector_store=store, db_path=jobs_db)
+
+    assert result.places == []
+    assert result.excluded_places == ["jakarta"]
+    assert set(store.calls[0]["filter"].must[0].match.any) == {2, 3, 5}
+    assert all("jakarta" not in job["location"].lower() for job in result.jobs)
+
+
+def test_exclusion_covering_requested_place_returns_nothing(jobs_db, fake_vector_store):
+    store = fake_vector_store(CHUNKS)
+    result = retrieve_jobs(
+        "lowongan di Jakarta Selatan selain Jakarta", vector_store=store, db_path=jobs_db
+    )
+
+    assert result.jobs == []
+    assert store.calls == []  # tidak ada kandidat, Qdrant tidak dipanggil
 
 
 def test_top_n_limits_results(jobs_db, fake_vector_store):

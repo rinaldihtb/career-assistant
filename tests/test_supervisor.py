@@ -227,6 +227,19 @@ def test_more_than_three_subtasks_are_skipped_with_note(jobs_db, store):
     assert result.parts[-1].answer == f"{SUPERVISOR_SKIPPED_NOTE}\n- Lowongan posisi 3"
 
 
+def test_duplicate_subtasks_run_once(jobs_db, store):
+    q = "Lowongan di luar Jakarta"
+    llm = ScriptedLLM(
+        plan=plan_reply(("rag", q), ("rag", "  lowongan di  LUAR jakarta ")),
+        replies={q: ["- [ID:2] Intern: cocok."]},
+    )
+    state = _state(q, llm, store, jobs_db)
+
+    assert state["subtasks"] == [{"agent": "rag", "question": q}]
+    assert len(store.calls) == 1
+    assert state["result"].source == "rag"  # satu bagian, tanpa judul ganda
+
+
 def test_declined_part_adds_note_to_single_answer(jobs_db, store):
     q = "Lowongan data analyst"
     llm = ScriptedLLM(

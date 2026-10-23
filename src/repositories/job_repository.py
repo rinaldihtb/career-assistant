@@ -83,6 +83,20 @@ def get_jobs_by_ids(db_path: str | Path, job_ids: Iterable[int]) -> list[dict[st
     return [by_id[job_id] for job_id in ids if job_id in by_id]
 
 
+def get_job_descriptions(db_path: str | Path) -> list[tuple[int, str]]:
+    """Ambil pasangan ``(id, job_description)`` semua lowongan.
+
+    Dipakai fitur Cocokkan CV untuk membangun indeks skill per lowongan sekali per
+    proses. Deskripsi NULL dikembalikan sebagai string kosong.
+
+    Raises:
+        FileNotFoundError: Jika file database tidak ada.
+        sqlite3.Error: Jika query gagal.
+    """
+    with closing(connect_readonly(db_path)) as conn:
+        return conn.execute("SELECT id, COALESCE(job_description, '') FROM jobs").fetchall()
+
+
 def get_job_locations(db_path: str | Path) -> list[tuple[int, str]]:
     """Ambil pasangan ``(id, location)`` semua lowongan yang punya lokasi.
 

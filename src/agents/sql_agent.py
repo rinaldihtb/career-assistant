@@ -46,6 +46,12 @@ _CITATION_TAG = re.compile(r"\[ID:\s*(\d+)\]\s*", re.IGNORECASE)
 _NO_SALARY_SENTENCE = re.compile(
     r"[ \t]*\d+\s+lowongan lain tidak mencantumkan gaji\.?", re.IGNORECASE
 )
+# "<n> dari <m> lowongan mencantumkan gaji" hanya sah jika hasil punya kolom
+# lowongan_dengan_gaji (statistik gaji, aturan 9). Eval b3-final T1b-01: LLM menulis
+# "X dari 4 lowongan mencantumkan gaji" di bawah daftar lowongan.
+_SALARY_COUNT_SENTENCE = re.compile(
+    r"[ \t]*\S+\s+dari\s+\S+\s+lowongan\s+mencantumkan\s+gaji\.?", re.IGNORECASE
+)
 _TITLE_PATTERN = re.compile(r"(lower\(\s*job_title\s*\)\s+LIKE\s+')([^']*)(')", re.IGNORECASE)
 # Akhiran pelaku dipotong ke kata dasarnya: '%design%' juga mencocokkan "Designer",
 # tetapi '%designer%' tidak mencocokkan "Graphic Design" (eval b3-sql, T11-03).
@@ -260,11 +266,22 @@ def complete_job_list(answer: str, rows: list[dict[str, Any]]) -> str:
 def finalize_answer(answer: str, rows: list[dict[str, Any]], max_rows: int) -> str:
     """Bagian jawaban yang faktanya sudah pasti di hasil query, ditulis kode, bukan LLM.
 
-    Urutan: daftar dilengkapi (``complete_job_list``), kalimat jumlah lowongan
-    tanpa gaji dari kolom ``lowongan_tanpa_gaji`` (hanya jika > 0; versi LLM
-    dibuang), lalu catatan hasil terpotong.
+    Urutan: daftar dilengkapi (``complete_job_list``), kalimat "<n> dari <m>
+    lowongan mencantumkan gaji" dibuang jika hasil tidak punya kolom
+    ``lowongan_dengan_gaji``, kalimat jumlah lowongan tanpa gaji dari kolom
+    ``lowongan_tanpa_gaji`` (hanya jika > 0; versi LLM dibuang), lalu catatan
+    hasil terpotong.
+
+    Kenapa kalimat "<n> dari <m>" dibuang, bukan ditulis kode: untuk statistik
+    satu baris dan perbandingan per grup, LLM sudah menulisnya dengan benar
+    (b3-final). Eval b32 menunjukkan mengubah aturannya di prompt justru membuat
+    angka total hilang di 6 kasus, jadi yang ditangani kode hanya kasus tanpa
+    kolom sumber.
     """
-    answer = _NO_SALARY_SENTENCE.sub("", complete_job_list(answer, rows)).rstrip()
+    answer = complete_job_list(answer, rows)
+    if not rows or "lowongan_dengan_gaji" not in rows[0]:
+        answer = re.sub(r"\n{3,}", "\n\n", _SALARY_COUNT_SENTENCE.sub("", answer))
+    answer = _NO_SALARY_SENTENCE.sub("", answer).rstrip()
     no_salary = rows[0].get("lowongan_tanpa_gaji") if rows else None
     if isinstance(no_salary, int) and no_salary > 0:
         answer = f"{answer}\n\n{SQL_NO_SALARY_NOTE.format(count=no_salary)}"

@@ -6,3 +6,4 @@ langchain_openai
 python-dotenv
 langchain_qdrant
 langgraph
+pypdf>=6.21,<7
