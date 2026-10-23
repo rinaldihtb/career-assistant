@@ -19,3 +19,10 @@ class Job(BaseModel):
     status: str = "OPEN"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class JobLocation(BaseModel):
+    """Projection ringan untuk query lokasi lowongan."""
+
+    id: int
+    location: str

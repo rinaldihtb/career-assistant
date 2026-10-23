@@ -1,100 +1,74 @@
-"""Akses read-only ke database lowongan (SQLite). Tidak ada LLM di file ini."""
-
-import sqlite3
 from collections.abc import Iterable
-from contextlib import closing
-from pathlib import Path
 from typing import Any
 
-# Kolom yang dikirim ke agent/UI. created_at dan updated_at sengaja tidak ikut:
-# isinya waktu seeding, bukan tanggal posting, jadi menyesatkan jika ditampilkan.
-JOB_DETAIL_COLUMNS = (
-    "id",
-    "job_title",
-    "company_name",
-    "location",
-    "work_type",
-    "job_description",
-    "salary_min",
-    "salary_max",
-    "salary_period",
-    "salary_currency",
-    "status",
-)
+from langchain_community.utilities import SQLDatabase
+from langchain_core.documents import Document
+from langchain_core.vectorstores import VectorStore
+from qdrant_client import models
+
+from models.jobs import Job, JobLocation
 
 
-def connect_readonly(db_path: str | Path) -> sqlite3.Connection:
-    """Buka koneksi SQLite dalam mode read-only.
+class JobRepository:
+    """Akses read-only data lowongan melalui ``SQLDatabase`` yang diinjeksi.
 
-    ``mode=ro`` membuat SQLite menolak semua operasi tulis (INSERT, UPDATE,
-    DELETE, DROP, CREATE) di level file, apa pun isi query-nya.
+    Contoh inisialisasi pada composition root aplikasi::
 
-    Args:
-        db_path: Path ke file SQLite, relatif terhadap working directory.
-
-    Returns:
-        Koneksi siap pakai. Pemanggil wajib menutupnya (pakai
-        ``contextlib.closing``).
-
-    Raises:
-        FileNotFoundError: Jika file tidak ada. Tanpa cek ini, SQLite akan
-            diam-diam membuat database kosong baru.
+        repository = JobRepository(db=SQL_DB, vector_db=VECTOR_DB)
     """
-    path = Path(db_path).resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"Database tidak ditemukan: {path}")
-    return sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
 
+    def __init__(self, db: SQLDatabase, vector_db: VectorStore) -> None:
+        self.db = db
+        self.vector_db = vector_db
 
-def get_jobs_by_ids(db_path: str | Path, job_ids: Iterable[int]) -> list[dict[str, Any]]:
-    """Ambil detail lowongan berdasarkan daftar ID, urutan mengikuti input.
+    def get_jobs_by_ids(self, job_ids: Iterable[int]) -> list[dict[str, Any]]:
+        """Ambil lowongan berdasarkan ID dan pertahankan urutan input."""
+        ids = list(dict.fromkeys(map(int, job_ids)))
+        if not ids:
+            return []
 
-    Urutan input dipertahankan karena RAG agent mengirim ID yang sudah
-    diurutkan dari skor tertinggi; ``WHERE id IN (...)`` di SQLite tidak
-    menjamin urutan apa pun.
+        parameters = {f"{index}": job_id for index, job_id in enumerate(ids)}
+        placeholders = ", ".join(f":{name}" for name in parameters)
+        columns = ", ".join(Job.model_fields)
 
-    Args:
-        db_path: Path ke file SQLite.
-        job_ids: ID lowongan. Duplikat dibuang, kemunculan pertama dipakai.
+        # Contoh jika ids = [10, 25]:
+        # parameters   -> {"id_0": 10, "id_1": 25}
+        # placeholders -> ":id_0, :id_1"
+        # query        -> SELECT id, ... FROM jobs WHERE id IN (:id_0, :id_1)
+        rows = self.db._execute(
+            f"SELECT {columns} FROM jobs WHERE id IN ({placeholders})", parameters=parameters
+        )
 
-    Returns:
-        Satu dict per lowongan dengan kolom ``JOB_DETAIL_COLUMNS``. ID yang
-        tidak ada di database dilewati (misalnya vektor Qdrant basi setelah
-        SQLite di-seed ulang). Input kosong langsung mengembalikan ``[]``
-        tanpa membuka database.
+        jobs_by_id = {job.id: job.model_dump() for job in map(Job.model_validate, rows)}
 
-    Raises:
-        FileNotFoundError: Jika file database tidak ada.
-        sqlite3.Error: Jika query gagal.
-    """
-    ids = list(dict.fromkeys(int(job_id) for job_id in job_ids))
-    if not ids:
-        return []
+        # Hasil: [{"id": 10, "job_title": "Backend Engineer", ...}, ...]
+        # Urutannya mengikuti ``ids``: [10, 25].
+        return [jobs_by_id[job_id] for job_id in ids if job_id in jobs_by_id]
 
-    # Yang disisipkan ke string hanya nama kolom konstanta dan tanda "?";
-    # nilai ID tetap dikirim sebagai parameter.
-    placeholders = ",".join("?" * len(ids))
-    query = f"SELECT {', '.join(JOB_DETAIL_COLUMNS)} FROM jobs WHERE id IN ({placeholders})"
-    with closing(connect_readonly(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(query, ids).fetchall()
+    def get_job_locations(self) -> list[tuple[int, str]]:
+        """Ambil pasangan ID dan lokasi untuk seluruh lowongan yang memiliki lokasi."""
+        columns = ", ".join(JobLocation.model_fields)
+        rows = self.db._execute(
+            f"SELECT {columns} FROM jobs WHERE location IS NOT NULL AND location != ''"
+        )
+        locations: list[tuple[int, str]] = []
 
-    by_id = {row["id"]: dict(row) for row in rows}
-    return [by_id[job_id] for job_id in ids if job_id in by_id]
+        for row in rows:
+            location = JobLocation.model_validate(row)
+            locations.append((location.id, location.location))
 
+        return locations
 
-def get_job_locations(db_path: str | Path) -> list[tuple[int, str]]:
-    """Ambil pasangan ``(id, location)`` semua lowongan yang punya lokasi.
+    def execute_sql(self, sql: str) -> list[dict[str, Any]]:
+        """Jalankan query SELECT yang sudah divalidasi oleh SQL agent."""
+        rows = self.db._execute(sql)
+        return [dict(row) for row in rows]
 
-    Dipakai RAG agent untuk membangun kamus lokasi tanpa LLM. Dengan 473
-    baris, mengambil semuanya lalu mencocokkan di Python lebih sederhana
-    daripada menyusun query LIKE dinamis.
+    def get_jobs_schema(self) -> str:
+        """Ambil DDL tabel ``jobs`` dari database untuk prompt SQL agent."""
+        return self.db.get_table_info(table_names=["jobs"])
 
-    Raises:
-        FileNotFoundError: Jika file database tidak ada.
-        sqlite3.Error: Jika query gagal.
-    """
-    with closing(connect_readonly(db_path)) as conn:
-        return conn.execute(
-            "SELECT id, location FROM jobs WHERE location IS NOT NULL AND location != ''"
-        ).fetchall()
+    def similarity_search_with_score(
+        self, query: str, k: int, filter: models.Filter | None = None
+    ) -> list[tuple[Document, float]]:
+        return self.vector_db.similarity_search_with_score(query, k, filter)

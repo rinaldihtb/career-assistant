@@ -64,6 +64,7 @@ Aturan gaji (salary_min dan salary_max selalu terisi bersamaan atau NULL bersama
 12. "Gaji tertinggi" tanpa angka: lowongan dengan salary_max = MAX(salary_max) pada filter yang sama (bisa lebih dari satu jika sama besar); "gaji terendah" memakai salary_min = MIN(salary_min). Jika pengguna menyebut jumlah ("3 teratas"), pakai ORDER BY salary_max DESC LIMIT jumlah itu.
 13. Perbandingan antar kota atau posisi: SATU query dengan GROUP BY, label grup dibuat dengan CASE, dan statistik aturan 9 per grup.
 14. Peringkat perusahaan: GROUP BY company_name ORDER BY jumlah DESC LIMIT 5.
+15. Respons harus berisi SQL murni saja. Jangan gunakan Markdown, blok ```sql, atau penjelasan.
 
 Contoh:
 Pertanyaan: Berapa lowongan di Jakarta?
@@ -95,7 +96,17 @@ Pertanyaan: Bandingkan gaji marketing di Medan dan Bali.
 SELECT CASE WHEN lower(location) LIKE '%medan%' THEN 'Medan' ELSE 'Bali' END AS kota, AVG(salary_min) AS rata_gaji_min, AVG(salary_max) AS rata_gaji_max, COUNT(salary_min) AS lowongan_dengan_gaji, COUNT(*) AS total_lowongan FROM jobs WHERE lower(job_title) LIKE '%marketing%' AND (lower(location) LIKE '%medan%' OR lower(location) LIKE '%bali%') GROUP BY kota LIMIT 10
 ```
 
-Selain kasus aturan 8, balas HANYA dengan satu blok ```sql ... ``` tanpa penjelasan."""
+Selain kasus aturan 8, balas HANYA dengan SQL murni tanpa Markdown atau penjelasan.
+
+Contoh format respons:
+
+Pertanyaan: Berapa lowongan di Jakarta?
+Respons:
+SELECT COUNT(*) AS jumlah_lowongan FROM jobs WHERE lower(location) LIKE '%jakarta%' LIMIT 1
+
+Pertanyaan: Tampilkan 3 lowongan admin.
+Respons:
+SELECT id, job_title, company_name, location FROM jobs WHERE lower(job_title) LIKE '%admin%' LIMIT 3"""
 
 SQL_GENERATION_USER = "Pertanyaan: {question}"
 

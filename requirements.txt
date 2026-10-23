@@ -6,3 +6,4 @@ langchain_openai
 python-dotenv
 langchain_qdrant
 langgraph
+langchain_community
