@@ -1,4 +1,4 @@
-"""RAG agent lengkap (Tahap 5) dengan LLM palsu dan vector store stub.
+"""RAG agent lengkap dengan LLM palsu dan vector store stub.
 
 Yang dites di sini adalah logika di sekitar LLM: jumlah panggilan, isi prompt,
 dan guard sitasi. Apakah LLM sungguhan benar-benar menolak kandidat yang tidak
@@ -68,7 +68,7 @@ def test_job_ids_follow_citation_order(jobs_db, fake_llm, fake_vector_store):
 
 
 def test_hallucinated_id_is_dropped_and_logged(jobs_db, fake_llm, fake_vector_store):
-    """ID 4 ada di database tetapi BUKAN kandidat; ID 999 tidak ada sama sekali."""
+    """ID 4 ada di database tetapi bukan kandidat; ID 999 tidak ada sama sekali."""
     llm = fake_llm("Cocok: [ID:1], [ID:4], dan [ID:999].")
     result = _run("Lowongan data analyst", llm, fake_vector_store(CHUNKS), jobs_db)
 

@@ -1,4 +1,4 @@
-"""Retrieval RAG agent (Tahap 4): repository, deteksi lokasi, dan pencarian.
+"""Retrieval RAG agent: repository, deteksi lokasi, dan pencarian.
 
 Semua test berjalan tanpa API key. Vector store memakai stub dari conftest,
 kecuali satu test yang memakai Qdrant in-memory asli untuk membuktikan

@@ -1,10 +1,6 @@
-"""Semua prompt dan pesan tetap untuk agent dan fitur CV. File ini tidak berisi logika.
+"""Prompt LLM dan pesan tetap untuk agent dan fitur CV, tanpa logika.
 
-Kenapa dipisah: prompt adalah bagian yang paling sering diubah saat
-memperbaiki kualitas jawaban. Di file terpisah, diff-nya mudah direview
-di PR tanpa tercampur perubahan logika.
-
-Placeholder ``{...}`` diisi dengan ``str.format`` oleh agent.
+Placeholder ``{...}`` diisi pemanggil dengan ``str.format``.
 """
 
 # ---------------------------------------------------------------------------
@@ -110,8 +106,8 @@ Error:
 
 Tulis ulang query yang benar sesuai aturan."""
 
-# Contoh format sitasi sengaja memakai <id>, bukan angka: baseline eval menunjukkan
-# LLM menyalin "[ID:123]" dari contoh lama menjadi ID palsu (T6b-02, T7-01).
+# Contoh format sitasi memakai <id>, bukan angka: contoh berangka seperti "[ID:123]" disalin
+# LLM menjadi ID palsu (kasus eval T6b-02, T7-01).
 SQL_ANSWER_SYSTEM = """Kamu asisten karier. Jawab pertanyaan pengguna dalam bahasa Indonesia HANYA berdasarkan hasil query yang diberikan.
 - Jangan menambah angka, nama perusahaan, atau lowongan yang tidak ada di hasil.
 - Jika menyebut lowongan tertentu, tulis satu baris per lowongan dengan format persis: - [ID:<id>] Judul - Perusahaan (Lokasi): fakta yang ditanyakan (misalnya gaji). Ganti <id> dengan nilai kolom id di hasil. Jika hasil tidak punya kolom id, jangan menulis ID sama sekali.
@@ -144,13 +140,12 @@ SQL_FAILED_MESSAGE = (
 
 SQL_EMPTY_RESULT_MESSAGE = "Tidak ada lowongan di data kami yang cocok dengan kriteria tersebut."
 
-# Ditambahkan Python dari kolom lowongan_tanpa_gaji: eval b3-answer menunjukkan LLM
-# menulis "1 lowongan lain" padahal nilainya 12 (T1b-02) dan 6 (T3-02), dan tetap
-# menulis kalimat ini untuk nilai 0 (T11-04).
+# Ditulis Python dari kolom lowongan_tanpa_gaji. Versi LLM salah angka ("1 lowongan lain"
+# untuk nilai 12 dan 6, kasus eval T1b-02 dan T3-02) dan tetap muncul untuk nilai 0 (T11-04).
 SQL_NO_SALARY_NOTE = "{count} lowongan lain tidak mencantumkan gaji."
 
-# Ditambahkan Python, bukan ditulis LLM: eval b2 (T7-01) menunjukkan LLM menulis
-# "hanya sebagian" pada hasil 2 baris. Terpotong atau tidak sudah diketahui pasti di kode.
+# Ditulis Python karena kode tahu pasti apakah hasil terpotong; LLM menulis "hanya sebagian"
+# untuk hasil 2 baris (kasus eval T7-01).
 SQL_TRUNCATED_NOTE = (
     "Catatan: data diambil maksimal {max_rows} baris, jadi daftar ini mungkin belum lengkap. "
     "Persempit dengan posisi atau kota untuk hasil lengkap."
@@ -210,12 +205,11 @@ RAG_FAILED_MESSAGE = "Maaf, pencarian lowongan sedang bermasalah. Coba beberapa 
 # Supervisor (planner)
 # ---------------------------------------------------------------------------
 
-# Satu panggilan LLM: memilih jenis respons, memecah pertanyaan menjadi sub-tugas
-# per agent, DAN menulis ulang setiap sub-tugas menjadi pertanyaan mandiri.
-# Aturan "pertahankan maksud" dan "jangan membuang bagian" berasal dari baseline
-# eval 17 Okt 2026: router lama mengubah permintaan daftar menjadi "Berapa jumlah"
-# dan membuang bagian kedua pertanyaan majemuk. Contoh di bawah sengaja tidak
-# diambil dari tests/eval/queries.yaml, supaya eval menguji aturan, bukan hafalan.
+# Satu panggilan LLM: memilih jenis respons, memecah pertanyaan menjadi sub-tugas per agent,
+# dan menulis ulang setiap sub-tugas menjadi pertanyaan mandiri. Aturan "pertahankan maksud"
+# dan "jangan membuang bagian" mencegah permintaan daftar berubah menjadi "Berapa jumlah" dan
+# bagian kedua pertanyaan majemuk hilang. Contoh di prompt tidak diambil dari
+# tests/eval/queries.yaml, supaya eval menguji aturan, bukan hafalan.
 SUPERVISOR_PLANNER_SYSTEM = """Kamu planner untuk Career Assistant, asisten pencarian lowongan kerja di Indonesia. Data: sekitar 470 lowongan dengan kolom judul, perusahaan, lokasi (kota/provinsi), tipe kerja, deskripsi, dan gaji per bulan (hanya sebagian lowongan). TIDAK ada tanggal posting, ulasan perusahaan, atau status lamaran.
 
 Agent yang tersedia:
@@ -325,7 +319,7 @@ SUPERVISOR_FAILED_MESSAGE = (
 
 # Teks CV berasal dari pengguna, jadi dibungkus tag <cv> dan aturan 2 membuatnya
 # diperlakukan sebagai data, bukan perintah (pola sama dengan tag <job> di RAG agent).
-# Lama pengalaman sengaja TIDAK diminta dari LLM: model hanya menyalin periode,
+# Lama pengalaman tidak diminta dari LLM: model hanya menyalin periode,
 # lalu Python menghitungnya (cv.profile.experience_months), karena LLM tidak tahu
 # tanggal hari ini dan mudah salah menjumlahkan periode yang tumpang-tindih.
 CV_PROFILE_SYSTEM = """Kamu mengekstrak profil dari teks CV untuk mencocokkan lowongan kerja di Indonesia.
@@ -347,7 +341,7 @@ CV_PROFILE_USER = """<cv>
 # Rencana belajar Skill Gap (cv/plan.py, 1 panggilan LLM structured output; bukan agent)
 # ---------------------------------------------------------------------------
 
-# Input hanya profil ringkas + skill gap hasil hitungan Python (cv/gap.py), TANPA teks CV,
+# Input hanya profil ringkas + skill gap hasil hitungan Python (cv/gap.py), tanpa teks CV,
 # nama, lokasi, atau riwayat kerja. Isi profil berasal dari CV pengguna, jadi dibungkus tag
 # <profil> dan aturan 1 membuatnya diperlakukan sebagai data (pola sama dengan <cv>).
 # Aturan 3 membatasi skill ke daftar skill gap; kepatuhannya diukur dengan `make sample-plan`.

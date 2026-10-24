@@ -1,11 +1,10 @@
 """Satu pintu masuk CV: PDF -> teks -> profil (1 panggilan LLM).
 
-Dipakai halaman Cocokkan CV (``st.file_uploader``) dan nanti Asisten Karier
-(``st.chat_input(accept_file=True)``), supaya validasi, ekstraksi, dan pesan error sama di
-kedua tempat. Persetujuan pengguna dicek UI SEBELUM fungsi ini dipanggil.
+Semua tempat upload CV memakai fungsi ini, sehingga validasi, ekstraksi, dan pesan error
+sama. Persetujuan pengguna dicek UI sebelum fungsi ini dipanggil.
 
-Privasi: teks CV hanya hidup selama pemanggilan. Yang dikembalikan hanya profil (disimpan
-pemanggil di ``st.session_state``) dan angka. Log tidak memuat teks CV maupun pesan error
+Teks CV hanya hidup selama pemanggilan. Yang dikembalikan hanya profil (disimpan pemanggil
+di ``st.session_state``) dan angka. Log tidak memuat teks CV maupun pesan error
 LLM, karena pesan "output tidak valid" bisa berisi potongan output model, yaitu data CV.
 """
 

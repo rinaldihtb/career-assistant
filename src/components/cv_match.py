@@ -1,16 +1,14 @@
-"""Halaman Cocokkan CV (Figma 02a kosong, 02b hasil).
+"""Halaman Cocokkan CV: upload PDF, profil terbaca, dan lowongan paling cocok.
 
-Alur:
-1. Kosong (02a): upload PDF dan centang persetujuan, baru tombol "Baca CV & cocokkan" aktif.
-   Klik: ``ingest_cv`` (1 LLM) lalu ``match_jobs`` (1 embedding, 0 LLM); hasilnya ditulis
-   sekali ke ``st.session_state["cv"]`` = {profile, version, matches, ...}.
-2. Hasil (02b): profil terbaca bisa dikoreksi. "Cocokkan ulang" menaikkan ``version``;
-   embedding ulang hanya jika teks profil yang di-embed berubah (koreksi lokasi tidak).
-3. "Ganti" mengosongkan state dan uploader.
+Tanpa CV aktif: uploader, checkbox persetujuan, dan tombol "Baca CV & cocokkan" yang aktif
+hanya jika keduanya terpenuhi. Tombol menjalankan ``ingest_cv`` (1 LLM) lalu ``match_jobs``
+(1 embedding, 0 LLM) dan menulis hasilnya sekali ke ``st.session_state["cv"]``.
 
-CV dan profil hanya di ``st.session_state`` (memori sesi), tidak ditulis ke disk atau log.
-Preferensi singkat di Figma 02a (posisi, lokasi, tipe kerja) belum diterapkan: ``match_jobs``
-belum memakai filter itu dan efeknya belum diukur di set eval Cocokkan CV.
+Dengan CV aktif: profil bisa dikoreksi. "Cocokkan ulang" menaikkan ``version`` dan meng-embed
+ulang hanya jika teks profil yang di-embed berubah (koreksi lokasi tidak). "Ganti"
+mengosongkan state dan uploader.
+
+CV dan profil hanya disimpan di ``st.session_state``, tidak di disk atau log.
 """
 
 import logging
@@ -116,7 +114,7 @@ def render_cv_match_page() -> None:
 
 
 def _render_upload() -> None:
-    """02a: uploader, persetujuan, dan tombol yang aktif hanya jika keduanya terpenuhi."""
+    """Uploader, persetujuan, dan tombol yang aktif hanya jika keduanya terpenuhi."""
     round_ = st.session_state.get(UPLOADER_ROUND_KEY, 0)
     uploaded = st.file_uploader(
         "CV (PDF)",
@@ -138,7 +136,7 @@ def _render_upload() -> None:
 
 
 def _ingest_and_match(uploaded: Any) -> None:
-    """Baca CV (1 LLM), cocokkan (1 embedding), simpan state sekali, lalu rerun ke 02b."""
+    """Baca CV (1 LLM), cocokkan (1 embedding), simpan state sekali, lalu rerun."""
     deps = _dependencies()
     if deps is None:
         return
@@ -156,7 +154,7 @@ def _ingest_and_match(uploaded: Any) -> None:
 
 
 def _render_profile_panel(state: dict[str, Any]) -> None:
-    """02b kiri: kartu file, form koreksi profil, dan "Cocokkan ulang"."""
+    """Panel kiri: kartu file, form koreksi profil, dan "Cocokkan ulang"."""
     profile: CVProfile = state["profile"]
     version = state["version"]
     # Baris horizontal, bukan st.columns: tombol selebar isinya. Dengan kolom [4, 1] tombol
@@ -255,7 +253,7 @@ def reset_cv() -> None:
 
 
 def _render_results(state: dict[str, Any]) -> None:
-    """02b kanan: kartu lowongan urut skor."""
+    """Panel kanan: kartu lowongan urut skor."""
     result: MatchResult = state["matches"]
     if result.error:
         st.warning(MATCH_FAILED)

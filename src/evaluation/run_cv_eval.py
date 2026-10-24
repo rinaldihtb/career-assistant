@@ -1,8 +1,8 @@
 """Set eval Cocokkan CV (tests/eval/cv_cases.yaml): pilih MatchConfig dengan gold per CV.
 
-    make eval-cv ARGS="--label c1d"       semua CV fiktif (butuh .env)
+    make eval-cv ARGS="--label nama"      semua CV fiktif (butuh .env)
     make eval-cv ARGS="--only cv01"       sebagian CV (prefix ID)
-    make eval-cv ARGS="--rescore tests/eval/results/cv-c1d-20261021-2000.json"
+    make eval-cv ARGS="--rescore tests/eval/results/<file>.json"
                                           hitung ulang dari kandidat tersimpan, tanpa API
 
 Biaya per CV: 1 panggilan LLM (profil), 2 embedding (ringkasan profil dan teks CV), 2 query
@@ -12,7 +12,7 @@ yang tersimpan, jadi menambah konfigurasi atau mengoreksi gold tidak menambah bi
 Alur per CV:
 1. ``extract_cv_text`` -> ``extract_cv_profile`` -> nilai profil terhadap gold (recall skill,
    skill yang dikarang, jenjang pendidikan, jumlah pengalaman).
-2. Per vektor query: SEMUA lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta
+2. Per vektor query: semua lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta
    jumlah skill cocok/disebut. Yang disimpan hanya angka, ID, dan profil (CV-nya fiktif);
    teks CV tidak disimpan.
 
@@ -79,7 +79,7 @@ SKILL_PRIORS = (0.0, 1.0, 2.0, 3.0)
 SEMANTIC_WEIGHTS = (0.4, 0.5, 0.6, 0.7, 0.8)
 REFERENCE_WEIGHT = 1.0  # semantik saja: pembanding, tidak ikut dipilih
 CALIBRATION_STEP = 0.05
-TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu 02b
+TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu hasil
 DEFAULT = MatchConfig()
 CONFIG_FIELDS = {
     "query",
@@ -288,13 +288,13 @@ def calibrate(
 ) -> tuple[float, float]:
     """Batas kalibrasi semantik dari distribusi cosine semua CV, kelipatan ``step``.
 
-    floor: median cosine kandidat TERENDAH di antara CV, dibulatkan ke bawah. Untuk setiap CV,
+    floor: median cosine kandidat terendah di antara CV, dibulatkan ke bawah. Untuk setiap CV,
     setidaknya separuh lowongan kandidatnya mendapat skor semantik di atas 0%.
-    ceiling: cosine teratas TERTINGGI di antara CV, dibulatkan ke bawah. Lowongan terbaik CV
+    ceiling: cosine teratas tertinggi di antara CV, dibulatkan ke bawah. Lowongan terbaik CV
     yang paling cocok mendapat skor semantik sekitar 100%.
 
     Kelipatan 0,05 karena 5 CV tidak cukup untuk presisi 0,01. Aturan pertama (median gabungan
-    dan maksimum, presisi 0,01) pada run cv-c1d-20261021-2130 memberi [0.50, 0.71] dan skor
+    dan maksimum, presisi 0,01) pada set eval memberi [0.50, 0.71] dan skor
     teratas cv04 66%, di luar 70-90%; aturan ini memberi [0.45, 0.70] dan 71-89% dengan
     precision@5 dan @10 yang sama (1.00).
     """

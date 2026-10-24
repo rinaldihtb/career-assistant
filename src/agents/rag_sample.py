@@ -3,22 +3,19 @@
     make sample-rag       retrieval saja: embedding query + Qdrant + SQLite (tanpa LLM chat)
     make sample-rag-llm   agent lengkap: retrieval + 1 panggilan LLM + guard sitasi
 
-Mode retrieval: kalibrasi ``DEFAULT_SCORE_THRESHOLD`` dan ``DEFAULT_CANDIDATE_K``.
-Pencarian dijalankan dengan threshold 0 agar kandidat di bawah threshold tetap
-terlihat, lalu setiap kandidat ditandai LOLOS atau DIBUANG terhadap threshold aktif.
+Mode retrieval mengkalibrasi ``DEFAULT_SCORE_THRESHOLD`` dan ``DEFAULT_CANDIDATE_K``:
+pencarian dijalankan dengan threshold 0, lalu setiap kandidat ditandai LOLOS atau DIBUANG
+terhadap threshold aktif.
 
-Relevansi dicek tanpa LLM: setiap pertanyaan punya query SQL pembanding yang
-ditulis manual (judul/lokasi), lalu dihitung berapa dari top-N yang ada di
-hasil pembanding. Ini proxy kasar: judul "Digital Graphic Designer" tidak
-dihitung relevan untuk "digital marketing" walaupun mungkin berguna.
+Relevansi dicek tanpa LLM: setiap pertanyaan punya query SQL pembanding (judul/lokasi), lalu
+dihitung berapa dari top-N yang ada di hasil pembanding. Ini proxy kasar: judul "Digital
+Graphic Designer" tidak dihitung relevan untuk "digital marketing" walaupun mungkin berguna.
 
-Mode LLM: pertanyaan yang sama, dicatat waktu, panggilan LLM, token, dan
-relevansi ID yang DIKUTIP (bukan kandidat). Kategori "tanpa hasil" dan
-"di luar topik" lulus jika tidak ada ID yang dikutip. "akuntan Surabaya"
-dinilai manual (aturan ditetapkan sebelum smoke test): pembandingnya hanya
-ID 466 "Senior Finance & Investment Manager", yang bukan posisi akuntan, jadi
-lulus jika tidak ada ID dikutip ATAU hanya 466 dengan pernyataan terus terang
-bahwa posisi akuntan tidak ada.
+Mode LLM mencatat waktu, panggilan LLM, token, dan relevansi ID yang dikutip (bukan
+kandidat). Kategori "tanpa hasil" dan "di luar topik" lulus jika tidak ada ID yang dikutip.
+"akuntan Surabaya" dinilai manual: pembandingnya hanya ID 466 "Senior Finance & Investment
+Manager" (bukan posisi akuntan), jadi lulus jika tidak ada ID dikutip, atau hanya 466 dengan
+pernyataan bahwa posisi akuntan tidak ada.
 
 Biaya mode retrieval: hanya embedding pertanyaan. Mode LLM menambah paling banyak
 10 panggilan chat (pertanyaan tanpa kandidat tidak memanggil LLM).

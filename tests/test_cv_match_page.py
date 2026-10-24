@@ -143,7 +143,7 @@ def _markdown(app: AppTest) -> list[str]:
     return [element.value for element in app.markdown]
 
 
-# --- 02a: upload --------------------------------------------------------------
+# --- Upload -------------------------------------------------------------------
 
 
 def test_empty_page_waits_for_file_and_consent(calls):
@@ -202,7 +202,7 @@ def test_missing_config_shows_error_on_read(calls, monkeypatch):
     assert calls["ingest"] == []
 
 
-# --- 02b: hasil dan koreksi --------------------------------------------------
+# --- Hasil dan koreksi -------------------------------------------------------
 
 
 def test_result_cards_show_score_skills_detail_and_disabled_letter(calls):

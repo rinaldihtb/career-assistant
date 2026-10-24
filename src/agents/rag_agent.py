@@ -8,14 +8,14 @@ Alur ``run_rag_agent`` (0 atau 1 panggilan LLM chat):
           lokasi yang diminta dikurangi lokasi yang dikecualikan) dan nama tempat
           dibuang dari teks yang di-embed.
        c. Buang chunk sangat pendek, dedupe per ``job_id`` (chunk skor tertinggi),
-          buang skor < threshold (hanya jika TIDAK ada filter lokasi), ambil ``top_n``.
+          buang skor < threshold (hanya jika tidak ada filter lokasi), ambil ``top_n``.
        d. Detail lowongan dari SQLite berdasarkan ID.
     2. Tanpa kandidat: pesan tetap, 0 panggilan LLM.
     3. ``answer_from_jobs``: satu panggilan LLM menjawab dari kandidat, lalu guard
        sitasi tanpa LLM menyaring ID yang dikutip.
 
-``retrieve_jobs`` dan ``answer_from_jobs`` sengaja dipisah agar fitur lain
-(misalnya Cocokkan CV) bisa memakai retrieval yang sama dengan langkah jawab berbeda.
+``retrieve_jobs`` terpisah dari ``answer_from_jobs`` sehingga retrieval bisa diukur tanpa
+LLM chat (``make sample-rag``).
 """
 
 import re
@@ -41,7 +41,7 @@ from repositories.job_repository import get_job_locations, get_jobs_by_ids
 
 DEFAULT_TOP_N = 5
 DEFAULT_CANDIDATE_K = 20  # chunk yang diambil dari Qdrant sebelum dedupe per lowongan
-# Hanya berlaku untuk pertanyaan TANPA lokasi. Smoke test 2 (12 Okt): top-1 relevan
+# Hanya berlaku untuk pertanyaan tanpa lokasi. Diukur dengan make sample-rag: top-1 relevan
 # 0,64-0,72, terlemah yang relevan 0,497; di luar topik maks 0,444; "pilot" 0,452.
 # Sengaja tidak dinaikkan ke 0,46 hanya demi satu titik data; LLM di
 # answer_from_jobs adalah lapisan kedua yang menolak lowongan tidak relevan.
@@ -169,7 +169,7 @@ def detect_places(question: str, place_index: dict[str, set[int]]) -> list[str]:
 
 # Kata sebelum nama tempat yang membalik maknanya: "selain Jakarta", "di luar Bandung",
 # "kecuali di Bali", "bukan dari Surabaya". Tanpa ini, filter lokasi justru membatasi
-# kandidat ke kota yang ingin dihindari (bug uji manual 20 Okt 2026).
+# kandidat ke kota yang ingin dihindari.
 EXCLUSION_PREFIX = r"(?:selain|kecuali|di\s+luar|bukan)\s+(?:(?:di|dari)\s+)?"
 
 

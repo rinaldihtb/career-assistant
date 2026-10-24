@@ -1,1 +1,1 @@
-"""Reusable Streamlit components for the Career Assistant application."""
+"""Komponen Streamlit untuk halaman Career Assistant."""

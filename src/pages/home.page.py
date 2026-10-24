@@ -1,4 +1,4 @@
-"""Descriptive Streamlit landing page for the Career Assistant."""
+"""Halaman Streamlit: Beranda (penjelasan aplikasi)."""
 
 from components.landing import render_landing_page
 from components.navigation import render_navigation

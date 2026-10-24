@@ -3,14 +3,14 @@
     make sample-supervisor   routing + jawaban lengkap untuk pertanyaan uji (butuh .env)
     make supervisor-graph    cetak diagram Mermaid graph (tanpa API key)
 
-Rute yang diharapkan ditetapkan SEBELUM smoke test pertama. Pertanyaan yang
+Rute yang diharapkan ditulis sebelum hasil agent dilihat. Pertanyaan yang
 bisa masuk dua rute sengaja ikut diuji (gaji di atas angka tertentu -> sql).
 Kasus lanjutan dinilai lulus jika rute benar, pertanyaan mandiri memuat semua
 kata wajib, dan tidak memuat kata yang dilarang (konteks lama yang seharusnya
 diganti, atau konteks yang tidak boleh ditempel ke pertanyaan baru).
 
 Rute di sini = daftar agent dari sub-tugas planner; "general" berarti tanpa agent.
-Evaluasi lengkap (49 kasus, termasuk pertanyaan majemuk) ada di ``make eval``.
+Evaluasi lengkap, termasuk pertanyaan majemuk, ada di ``make eval``.
 """
 
 import os
@@ -42,8 +42,8 @@ QUESTIONS = [
 ]
 
 # (riwayat, pertanyaan lanjutan, rute, kata wajib ada, kata dilarang ada) di pertanyaan mandiri.
-# Kasus 3-5 ditambahkan setelah smoke test 1 (14 Okt) dan TIDAK dipakai sebagai
-# contoh di prompt router, supaya menguji aturan, bukan hafalan contoh.
+# Kasus 3-5 tidak dipakai sebagai contoh di prompt planner, supaya menguji aturan, bukan
+# hafalan contoh.
 FOLLOW_UPS = [
     (
         [

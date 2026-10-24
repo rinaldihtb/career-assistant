@@ -47,14 +47,14 @@ _NO_SALARY_SENTENCE = re.compile(
     r"[ \t]*\d+\s+lowongan lain tidak mencantumkan gaji\.?", re.IGNORECASE
 )
 # "<n> dari <m> lowongan mencantumkan gaji" hanya sah jika hasil punya kolom
-# lowongan_dengan_gaji (statistik gaji, aturan 9). Eval b3-final T1b-01: LLM menulis
-# "X dari 4 lowongan mencantumkan gaji" di bawah daftar lowongan.
+# lowongan_dengan_gaji (statistik gaji, aturan 9). Tanpa kolom itu LLM bisa menulis
+# "X dari 4 lowongan mencantumkan gaji" di bawah daftar lowongan (kasus eval T1b-01).
 _SALARY_COUNT_SENTENCE = re.compile(
     r"[ \t]*\S+\s+dari\s+\S+\s+lowongan\s+mencantumkan\s+gaji\.?", re.IGNORECASE
 )
 _TITLE_PATTERN = re.compile(r"(lower\(\s*job_title\s*\)\s+LIKE\s+')([^']*)(')", re.IGNORECASE)
 # Akhiran pelaku dipotong ke kata dasarnya: '%design%' juga mencocokkan "Designer",
-# tetapi '%designer%' tidak mencocokkan "Graphic Design" (eval b3-sql, T11-03).
+# tetapi '%designer%' tidak mencocokkan "Graphic Design" (kasus eval T11-03).
 _TITLE_STEMS = {"designer": "design", "desainer": "desain"}
 _TITLE_STEM_WORD = re.compile(r"\b(" + "|".join(_TITLE_STEMS) + r")\b")
 
@@ -184,7 +184,7 @@ def generate_sql(
     """Minta LLM menulis satu query SQL; jika ada ``error``, gunakan prompt retry.
 
     Returns:
-        Query yang sudah dikeluarkan dari blok ```sql``` tetapi BELUM divalidasi.
+        Query yang sudah dikeluarkan dari blok ```sql``` tetapi belum divalidasi.
     """
     if error is None:
         user_prompt = SQL_GENERATION_USER.format(question=question)
@@ -246,9 +246,9 @@ def complete_job_list(answer: str, rows: list[dict[str, Any]]) -> str:
     """Tambahkan baris lowongan yang ada di hasil query tetapi tidak dikutip LLM.
 
     Hanya berlaku jika LLM sudah menulis daftar (minimal satu ``[ID:x]``): jawaban
-    statistik tanpa daftar tidak diubah. Kenapa di kode: aturan "tampilkan setiap
-    baris" di prompt tidak cukup; pada eval b3-answer LLM tetap membuang ID 221
-    (gaji 7-10 juta untuk "di atas 8 juta", T3-02) karena menyaring ulang sendiri.
+    statistik tanpa daftar tidak diubah. Aturan "tampilkan setiap baris" di prompt tidak
+    cukup: LLM menyaring ulang sendiri dan membuang lowongan bergaji 7-10 juta untuk
+    "di atas 8 juta" (kasus eval T3-02).
     """
     cited = {int(job_id) for job_id in _CITATION_TAG.findall(answer)}
     if not cited:
@@ -272,11 +272,9 @@ def finalize_answer(answer: str, rows: list[dict[str, Any]], max_rows: int) -> s
     ``lowongan_tanpa_gaji`` (hanya jika > 0; versi LLM dibuang), lalu catatan
     hasil terpotong.
 
-    Kenapa kalimat "<n> dari <m>" dibuang, bukan ditulis kode: untuk statistik
-    satu baris dan perbandingan per grup, LLM sudah menulisnya dengan benar
-    (b3-final). Eval b32 menunjukkan mengubah aturannya di prompt justru membuat
-    angka total hilang di 6 kasus, jadi yang ditangani kode hanya kasus tanpa
-    kolom sumber.
+    Kalimat "<n> dari <m>" hanya dibuang, tidak ditulis ulang oleh kode: untuk statistik
+    satu baris dan perbandingan per grup LLM menulisnya dengan benar, sedangkan mengubah
+    aturannya di prompt membuat angka total hilang di 6 kasus eval.
     """
     answer = complete_job_list(answer, rows)
     if not rows or "lowongan_dengan_gaji" not in rows[0]:
@@ -293,9 +291,9 @@ def finalize_answer(answer: str, rows: list[dict[str, Any]], max_rows: int) -> s
 def strip_invalid_citations(answer: str, valid_ids: list[int]) -> tuple[str, list[int]]:
     """Buang tag ``[ID:x]`` yang ID-nya tidak ada di hasil query; teks lainnya tetap.
 
-    Kenapa hanya tag yang dibuang, bukan barisnya: pada baseline eval, baris dengan
-    ID palsu tetap memuat fakta yang benar (misalnya gaji), hanya ID-nya yang
-    dikarang. Tanpa tag, UI tidak membuat kartu untuk lowongan yang salah.
+    Hanya tag yang dibuang, bukan barisnya: baris dengan ID palsu tetap memuat fakta yang
+    benar (misalnya gaji), hanya ID-nya yang dikarang. Tanpa tag, UI tidak membuat kartu
+    untuk lowongan yang salah.
 
     Returns:
         ``(jawaban_bersih, id_yang_dibuang)``; daftar ID urut kemunculan, tanpa duplikat.
@@ -328,8 +326,8 @@ def stem_title_patterns(sql: str) -> str:
     untuk "graphic designer"). Hanya pola ``job_title`` yang diubah, bukan lokasi
     atau perusahaan.
 
-    Kenapa di kode: aturan 3 dan contoh "desainer interior" di prompt tidak cukup;
-    pada eval b3-sql LLM tetap menulis '%graphic designer%' (T11-03 menjawab 1, bukan 2).
+    Aturan 3 dan contoh "desainer interior" di prompt tidak cukup: LLM tetap menulis
+    '%graphic designer%' (kasus eval T11-03 menjawab 1, bukan 2).
     """
 
     def _stem(match: re.Match[str]) -> str:

@@ -48,7 +48,7 @@ CHECK_QUERIES = [
     ),
 ]
 
-# Dieksekusi TANPA validate_sql agar yang diuji benar-benar koneksi read-only.
+# Dieksekusi tanpa validate_sql agar yang diuji benar-benar koneksi read-only.
 BLOCKED_QUERIES = [
     "WITH x AS (SELECT 1) DELETE FROM jobs",
     "DELETE FROM jobs",

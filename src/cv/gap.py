@@ -1,22 +1,21 @@
-"""Skill gap dari lowongan teratas hasil Cocokkan CV. Python murni: 0 LLM, 0 embedding.
+"""Skill gap dari lowongan teratas hasil Cocokkan CV, tanpa LLM dan tanpa embedding.
 
-Input cukup ``MatchResult.matches`` yang sudah ada di ``st.session_state["cv"]``: setiap
-``JobMatch`` sudah membawa ``matched_skills``, ``missing_skills``, dan ``score``, jadi tidak
-perlu query ulang. Hitungannya sekitar 100 operasi, sehingga tidak di-cache.
+Input cukup ``MatchResult.matches``: setiap ``JobMatch`` sudah membawa ``matched_skills``,
+``missing_skills``, dan ``score``, jadi tidak ada query ulang. Hitungannya sekitar
+100 operasi, sehingga tidak di-cache.
 
-Rumus urutan (diukur pada top-10 cv01..cv05 set eval Cocokkan CV, run
-cv-c1d-rescored-20261022-0808):
-1. Jumlah lowongan yang menyebut skill ("7 dari 10"). Dibandingkan urutan berbobot skor
-   lowongan, bobot skor TIDAK PERNAH menaruh skill dengan hitungan lebih kecil di atas skill
-   dengan hitungan lebih besar di kelima CV; bedanya hanya pada skill yang seri. Jumlah
-   dipakai sebagai kunci utama supaya angka "x dari 10" yang tampil selalu sesuai urutan.
+Urutan skill:
+1. Jumlah lowongan yang menyebut skill ("7 dari 10"), supaya angka yang tampil selalu sesuai
+   urutan. Pada top-10 kelima CV set eval Cocokkan CV, urutan berbobot skor lowongan tidak
+   pernah menaruh skill dengan hitungan lebih kecil di atas hitungan lebih besar; bedanya
+   hanya pada skill yang seri.
 2. Seri dipecah dengan total skor lowongan yang menyebutnya (skill dari lowongan yang lebih
    cocok lebih dulu). Seri sering terjadi: 4 skill "1 dari 10" di cv01, 6 di cv05.
 3. Lalu urutan kemunculan pertama: lowongan urut skor, dan ``missing_skills`` per lowongan
    sudah urut frekuensi skill di 473 lowongan.
 
-Tanpa ambang minimal: skill gap set eval jarang (tertinggi 2-4 dari 10). Ambang ">= 2
-lowongan" akan mengosongkan skill gap cv04 dan menyisakan satu skill untuk cv03.
+Tidak ada ambang minimal: skill gap di set eval jarang (tertinggi 2-4 dari 10), dan ambang
+">= 2 lowongan" mengosongkan skill gap cv04 dan menyisakan satu skill untuk cv03.
 """
 
 from collections.abc import Iterable, Sequence

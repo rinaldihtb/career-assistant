@@ -2,7 +2,7 @@
 
 Dua sumber skill dipakai bersama:
 - ``SKILL_VOCAB``: kosakata hard skill yang dikurasi dari 473 deskripsi lowongan; setiap
-  istilah muncul di minimal 2 lowongan. Kosakata menentukan skill yang DISEBUT lowongan,
+  istilah muncul di minimal 2 lowongan. Kosakata menentukan skill yang disebut lowongan,
   sehingga "skill kurang" bisa ditampilkan.
 - Skill CV di luar kosakata (misalnya "YOLO", "SHAP", "LangChain") tetap dicari langsung di
   deskripsi, supaya tidak hilang hanya karena tidak ada di kosakata.
@@ -163,7 +163,7 @@ _NOT_BEFORE: dict[str, tuple[str, ...]] = {
     "recruitment": ("process", "agency", "faq", "service", "services", "fee", "fees"),
 }
 
-# Alias yang hanya aman di DAFTAR SKILL CV: "Word" di CV pasti Microsoft Word, tetapi "word"
+# Alias yang hanya aman di daftar skill CV: "Word" di CV pasti Microsoft Word, tetapi "word"
 # di deskripsi lowongan adalah kata biasa (muncul di 29 lowongan).
 CV_ONLY_ALIASES: dict[str, str] = {
     "word": "Microsoft Word",
@@ -244,7 +244,7 @@ def _vocab_pattern(aliases: Iterable[str]) -> re.Pattern[str]:
 
 
 def _needles(aliases: Iterable[str]) -> tuple[str, ...]:
-    """Potongan teks yang PASTI ada jika alias cocok: token terpanjang setiap alias."""
+    """Potongan teks yang pasti ada jika alias cocok: token terpanjang setiap alias."""
     return tuple(max(re.split(r"[\s\-]+", alias.strip().lower()), key=len) for alias in aliases)
 
 

@@ -386,7 +386,7 @@ def test_cases_file_is_consistent():
 
 @pytest.mark.skipif(not REAL_DB.is_file(), reason="data/database.sqlite tidak tersedia")
 def test_manual_judgements_are_outside_title_gold():
-    """extra_ids hanya untuk judul yang TIDAK tertangkap regex; not_relevant_ids bukan gold."""
+    """extra_ids hanya untuk judul yang tidak tertangkap regex; not_relevant_ids bukan gold."""
     titles = load_titles(REAL_DB)
     for case in CASES:
         by_title = set(gold_job_ids({**case, "extra_ids": []}, titles))

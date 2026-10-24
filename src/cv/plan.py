@@ -1,13 +1,11 @@
-"""Rencana belajar 4 minggu dari skill gap: tepat 1 panggilan LLM (structured output).
+"""Rencana belajar 4 minggu dari skill gap, dengan tepat 1 panggilan LLM (structured output).
 
-Input prompt hanya profil ringkas (posisi tujuan, label pengalaman, pendidikan, skill) dan
-skill gap hasil ``cv.gap.compute_skill_gap``. Teks CV, nama, lokasi, dan riwayat kerja tidak
-dikirim: tidak dibutuhkan untuk menyusun rencana, dan makin sedikit data CV yang keluar
-makin baik. Biaya sekitar 700 token masuk + 350 keluar per rencana.
+Prompt hanya berisi profil ringkas (posisi tujuan, label pengalaman, pendidikan, skill) dan
+skill gap dari ``cv.gap.compute_skill_gap``; teks CV, nama, lokasi, dan riwayat kerja tidak
+dikirim. Biaya terukur (``make sample-plan``): 560-656 token masuk + 201-251 keluar.
 
-Kontrak sama dengan ``cv.profile``: LLM disuntikkan, fungsi tidak pernah melempar exception,
-kegagalan di ``LearningPlanResult.error``. Pemanggil (halaman Skill Gap) meng-cache hasil per
-``version`` profil di ``st.session_state["cv"]``.
+LLM disuntikkan, fungsi tidak pernah melempar exception, dan kegagalan ada di
+``LearningPlanResult.error``. Halaman Skill Gap meng-cache hasil per ``version`` profil.
 """
 
 from langchain_core.language_models import BaseChatModel

@@ -5,31 +5,27 @@ Graph::
     START -> planner -> (Send per sub-tugas, paralel) -> sql_agent / rag_agent -> synthesize -> END
                      -> respond -> END            (tanpa sub-tugas: tanya balik, tolak, dll.)
 
-- ``planner``: SATU panggilan LLM (structured output) yang memecah pertanyaan menjadi
+- ``planner``: satu panggilan LLM (structured output) yang memecah pertanyaan menjadi
   1-3 sub-tugas ``{agent, question}`` dan sekaligus menulis ulang pertanyaan lanjutan
   menjadi pertanyaan mandiri. Untuk pertanyaan yang tidak butuh data, planner memilih
   jenis respons (tanya balik, tolak, di luar topik, data tidak tersedia).
 - ``sql_agent`` / ``rag_agent``: dijalankan paralel lewat ``Send``, satu sub-tugas per
   panggilan. ``run_sql_agent`` / ``run_rag_agent`` dipakai apa adanya, sehingga guard
-  yang sudah ada (SQL read-only, sitasi [ID:x]) tetap berlaku per sub-tugas.
-- ``synthesize``: TANPA LLM. Satu sub-tugas diteruskan apa adanya; lebih dari satu
+  agent (SQL read-only, sitasi [ID:x]) tetap berlaku per sub-tugas.
+- ``synthesize``: tanpa LLM. Satu sub-tugas diteruskan apa adanya; lebih dari satu
   digabung dengan template (judul per bagian) sehingga angka dan ID tidak ditulis ulang.
 - ``respond``: pesan tetap tanpa LLM untuk respons selain ``answer``.
 
-Kenapa orkestrasi ada di supervisor, bukan di agent: setiap agent tetap mengerjakan
-satu tugas (mudah dites, guard tidak berubah). Baseline eval menunjukkan dua tugas
-yang dipaksa masuk ke satu agent gagal (SQL dua statement, RAG satu pencarian untuk
-dua posisi).
+Setiap agent mengerjakan satu tugas; pertanyaan majemuk dipecah planner. Dua tugas dalam
+satu agent gagal di eval (SQL dua statement, RAG satu pencarian untuk dua posisi).
 
-Kenapa planner + ``Send``, bukan supervisor LLM yang memanggil agent sebagai tool
-(``langgraph_supervisor.create_supervisor``): pola tool-calling butuh satu panggilan
-LLM per iterasi ditambah satu untuk jawaban akhir, sub-tugas berjalan berurutan, dan
-jawaban agent ditulis ulang LLM (angka atau ID bisa berubah). Planner cukup satu
-panggilan, sub-tugas paralel, dan biaya maksimal pasti (3 sub-tugas).
+Dibanding supervisor tool-calling (``langgraph_supervisor.create_supervisor``), planner +
+``Send`` cukup satu panggilan LLM untuk merencanakan, menjalankan sub-tugas secara paralel,
+tidak menulis ulang jawaban agent (angka dan ID tetap), dan biaya maksimalnya pasti
+(3 sub-tugas).
 
-Dependency (``llm``, ``vector_store``, ``db_path``) disuntikkan lewat
-``context_schema`` LangGraph, bukan di-import global. Graph cukup di-compile
-sekali saat modul di-import, dan test bisa memakai LLM palsu tanpa API key.
+Dependency (``llm``, ``vector_store``, ``db_path``) disuntikkan lewat ``context_schema``
+LangGraph, sehingga graph cukup di-compile sekali dan test bisa memakai LLM palsu.
 """
 
 import operator
@@ -135,7 +131,7 @@ class SupervisorState(TypedDict, total=False):
     Attributes:
         question: Pertanyaan asli pengguna pada giliran ini.
         history: Pesan sebelumnya ``{"role": "user"|"assistant", "content": ...}``,
-            TANPA pertanyaan saat ini. Format sama dengan ``st.session_state`` chat.
+            tanpa pertanyaan saat ini. Format sama dengan ``st.session_state`` chat.
         response: Jenis respons pilihan planner.
         subtasks: ``[{"agent": ..., "question": ...}]`` hasil planner (maks 3).
         skipped: Bagian pertanyaan yang tidak dikerjakan karena melebihi batas.
@@ -209,9 +205,9 @@ def run_supervisor(
 def _unique_subtasks(tasks: Sequence[SubTask]) -> list[dict[str, str]]:
     """Sub-tugas planner tanpa pertanyaan kosong dan tanpa duplikat (agent + pertanyaan sama).
 
-    Kenapa di Python, bukan aturan prompt: planner pernah mengeluarkan dua sub-tugas
-    identik (uji manual 20 Okt 2026, "di mana saja loker selain di jakarta?"), sehingga
-    jawaban tampil dua kali dan biaya LLM agent berlipat. Pembandingan mengabaikan huruf
+    Ditangani Python, bukan aturan prompt: planner bisa mengeluarkan dua sub-tugas identik
+    (misalnya untuk "di mana saja loker selain di jakarta?"), sehingga jawaban tampil dua
+    kali dan biaya LLM agent berlipat. Pembandingan mengabaikan huruf
     besar dan spasi berlebih; urutan kemunculan pertama dipertahankan.
     """
     seen: set[tuple[str, str]] = set()
@@ -297,25 +293,23 @@ def run_rag_node(task: SubTaskInput, runtime: Runtime[SupervisorContext]) -> dic
 def respond(state: SupervisorState) -> dict:
     """Node pesan tetap tanpa LLM: tanya balik, tolak, di luar topik, data tidak tersedia.
 
-    Kenapa tanpa LLM: jawaban ini tidak butuh data, dan pesan tetap tidak bisa
-    berhalusinasi tentang lowongan (baseline: "Ada lowongan?" dijawab 5 lowongan acak).
+    Jawaban ini tidak butuh data, dan pesan tetap tidak bisa mengarang lowongan (dengan
+    LLM, "Ada lowongan?" pernah dijawab dengan 5 lowongan acak).
     """
     result = AgentResult(answer=FIXED_MESSAGES[state["response"]], source="general")
     return {"subresults": [], "result": _with_totals(result, state, [])}
 
 
 def synthesize(state: SupervisorState) -> dict:
-    """Node penggabung TANPA LLM.
+    """Node penggabung tanpa LLM.
 
-    - Satu sub-tugas tanpa catatan: hasil agent diteruskan apa adanya (sama seperti
-      supervisor lama, sehingga UI dan guard tidak berubah).
+    - Satu sub-tugas tanpa catatan: hasil agent diteruskan apa adanya.
     - Selain itu: ``source="multi"``, ``parts`` = satu bagian per sub-tugas dengan
       judul pertanyaan mandirinya, ditambah bagian catatan (pertanyaan yang dilewati
       atau ditolak). Jawaban teks = gabungan semua bagian, untuk riwayat chat.
 
-    Kenapa template, bukan LLM: angka dan ID [ID:x] dari agent tidak boleh berubah,
-    dan template tidak menambah token maupun latensi. LLM baru dipertimbangkan jika
-    eval menunjukkan template kurang (ukurannya: angka dan ID tetap utuh).
+    Template dipakai, bukan LLM, agar angka dan ID [ID:x] dari agent tidak berubah dan
+    tidak ada tambahan token maupun latensi.
     """
     subresults = [result for _, result in sorted(state.get("collected", []), key=lambda x: x[0])]
     notes = _notes(state.get("skipped", []), state.get("declined", []))

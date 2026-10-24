@@ -1,19 +1,15 @@
-"""Halaman Skill Gap & rencana belajar (Figma 03).
+"""Halaman Skill Gap: skill yang paling sering diminta lowongan teratas dan rencana belajar.
 
-Alur:
-1. Membaca CV aktif dari ``st.session_state["cv"]``; tanpa CV, tampilkan ajakan ke Cocokkan CV.
-2. Skill gap dihitung Python dari ``matches`` yang sudah ada (``cv.gap``): 0 LLM, 0 embedding,
-   tidak di-cache karena hanya sekitar 100 operasi.
-3. Rencana belajar: 1 panggilan LLM, hanya saat tombol diklik, lalu di-cache di
-   ``st.session_state["cv"]["plan"]`` per ``version`` profil. "Ganti" CV menghapusnya
-   bersama state CV.
+Halaman membaca CV aktif dari ``st.session_state["cv"]``; tanpa CV, halaman mengarahkan ke
+Cocokkan CV. Skill gap dihitung dari ``matches`` yang sudah ada (``cv.gap``: 0 LLM,
+0 embedding, sekitar 100 operasi, tidak di-cache). Rencana belajar dibuat dengan 1 panggilan
+LLM saat tombol diklik, lalu di-cache di ``st.session_state["cv"]["plan"]`` per ``version``
+profil; "Ganti" CV menghapusnya bersama state CV.
 
-Menyimpang dari Figma 03 (diputuskan dari data, lihat ``cv.gap``):
-- Tanpa banner estimasi kenaikan skor: menambah 2 skill gap teratas hanya menaikkan skor
-  rata-rata top-10 sebesar 1,0-2,5 poin di set eval (porsi skill 40% dan dibagi
-  disebut + 2), jauh dari contoh 74% -> 86% di Figma.
-- Tanpa tombol "Tanya Asisten": Asisten Karier belum membaca CV (C1e-4).
-- Bar memakai ``st.progress`` (urutan pasti sama dengan rumus), bukan ``st.bar_chart``.
+Bar memakai ``st.progress`` agar urutan tampil sama persis dengan urutan hitungan. Halaman
+tidak menampilkan estimasi kenaikan skor: menambah 2 skill gap teratas hanya menaikkan skor
+rata-rata top-10 sebesar 1,0-2,5 poin di set eval Cocokkan CV (porsi skill berbobot 40% dan
+dibagi jumlah skill disebut + 2).
 """
 
 import logging

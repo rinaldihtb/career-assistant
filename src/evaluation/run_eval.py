@@ -2,7 +2,7 @@
 
     make eval ARGS="--label baseline"     semua kasus (butuh .env)
     make eval ARGS="--only T3 T6b-01"     sebagian kasus (prefix kategori atau ID)
-    make eval ARGS="--rescore tests/eval/results/baseline-20261017-1952.json"
+    make eval ARGS="--rescore tests/eval/results/<file>.json"
                                           nilai ulang hasil lama dengan queries.yaml terbaru,
                                           tanpa LLM (dipakai saat set eval dikoreksi)
 
@@ -139,7 +139,7 @@ def run_case(
 def rescore_record(
     case: Mapping[str, Any], old: Mapping[str, Any], db_path: str | Path
 ) -> dict[str, Any]:
-    """Nilai ulang catatan run lama dengan kasus versi sekarang, TANPA memanggil LLM.
+    """Nilai ulang catatan run lama dengan kasus versi sekarang, tanpa memanggil LLM.
 
     Jawaban, rute, dan ID yang dikutip diambil dari catatan lama; sub-hasil
     dibangun ulang dari ``cited_sql``/``cited_rag`` agar ``split_citations``

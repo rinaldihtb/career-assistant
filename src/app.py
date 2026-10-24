@@ -1,4 +1,4 @@
-"""Streamlit application entry point."""
+"""Entry point Streamlit: daftar halaman dan navigasi."""
 
 import streamlit as st
 

@@ -1,15 +1,12 @@
 """Profil CV terstruktur dari teks CV: 1 panggilan LLM lalu perhitungan deterministik.
 
-Pembagian kerja:
-- LLM (structured output) hanya MENYALIN fakta: nama, posisi tujuan, lokasi, pendidikan
-  tertinggi, skill, dan daftar pengalaman beserta periodenya.
-- Python MENGHITUNG lama pengalaman dari periode itu: periode yang tumpang-tindih
-  digabung dan "present" berarti bulan ini. LLM tidak tahu tanggal hari ini dan mudah
-  salah menjumlahkan periode yang tumpang-tindih; hitungan Python bisa dites.
+LLM (structured output) menyalin fakta: nama, posisi tujuan, lokasi, pendidikan tertinggi,
+skill, dan daftar pengalaman beserta periodenya. Python menghitung lama pengalaman dari
+periode itu (periode tumpang-tindih digabung, "present" = bulan ini), karena LLM tidak tahu
+tanggal hari ini dan mudah salah menjumlahkan periode yang tumpang-tindih.
 
-Kontrak sama dengan agent: dependency (LLM) disuntikkan, fungsi tidak pernah melempar
-exception, kegagalan dilaporkan lewat ``CVProfileResult.error``. Profil hanya dikembalikan,
-tidak disimpan ke disk atau log.
+LLM disuntikkan, fungsi tidak pernah melempar exception, dan kegagalan dilaporkan lewat
+``CVProfileResult.error``. Profil hanya dikembalikan, tidak disimpan ke disk atau log.
 """
 
 import re

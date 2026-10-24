@@ -133,7 +133,7 @@ def render_assistant_page() -> None:
 def _answer(question: str, deps: AssistantDependencies, messages: list[dict[str, Any]]) -> None:
     """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
 
-    ``history`` diambil SEBELUM pertanyaan baru ditambahkan, sesuai kontrak
+    ``history`` diambil sebelum pertanyaan baru ditambahkan, sesuai kontrak
     ``run_supervisor`` (riwayat tanpa pertanyaan saat ini). ``AgentResult``
     dan durasi ikut disimpan agar kartu dan detail LLM tetap tampil saat rerun.
     """

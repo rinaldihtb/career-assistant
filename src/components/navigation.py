@@ -1,4 +1,4 @@
-"""Sidebar navigation for the Career Assistant pages."""
+"""Navigasi sidebar untuk semua halaman."""
 
 import streamlit as st
 
@@ -8,15 +8,11 @@ CV_PAGE = "pages/cvmatch.page.py"
 
 
 def render_navigation() -> None:
-    """Render the shared sidebar navigation and the active-CV status block.
+    """Render link halaman dan status CV aktif di sidebar.
 
-    Tanpa akun (keputusan produk): tidak ada link Sign in / Sign up. Status CV dibaca dari
-    ``st.session_state`` saja, jadi tampil sama di semua halaman.
+    Status CV dibaca dari ``st.session_state``, jadi tampil sama di semua halaman.
     """
     with st.sidebar:
-        # st.title("App Name")
-        # st.caption("App Description")
-        # st.divider()
         st.page_link("pages/home.page.py", label="Beranda")
         st.page_link("pages/jobsearch.page.py", label="Cari Lowongan")
         st.page_link(CV_PAGE, label="Cocokkan CV")
