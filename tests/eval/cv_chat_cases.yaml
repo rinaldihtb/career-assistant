@@ -15,6 +15,10 @@
 # K4 "Skill apa yang kurang/perlu dipelajari" -> cv_gap.
 # K5 Isi jawaban SQL/RAG tidak dinilai di set ini (tugas make eval); yang dinilai rute,
 #    respons, isi jawaban agent CV, sitasi, dan pertanyaan mandiri.
+# K6 (v1.1) Posisi tujuan di pertanyaan mandiri ditulis tanpa tingkat jabatan (Executive, Staff,
+#    Officer, Senior, Junior): SQL mencocokkan judul kata per kata, dan "Sales & Marketing
+#    Executive" hanya cocok dengan 1 lowongan bergaji di atas 8 juta, "sales"/"marketing" 24.
+#    Run lama dinilai ulang dengan: run_cv_chat_eval --rescore <file.json>
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
@@ -25,7 +29,7 @@
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.0"
+version: "1.1"
 profiles: tests/eval/results/cv-c1e3-skills-20261024-1349.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -122,6 +126,7 @@ cases:
     expected: {agents: [rag]}
     checks:
       standalone_all: [[sales, marketing, pemasaran], [bekasi]]
+      standalone_none: [executive]
 
   - id: C3-05
     category: C3
@@ -157,6 +162,7 @@ cases:
     expected: {agents: [sql]}
     checks:
       standalone_all: [[sales, marketing, pemasaran], [8 juta, 8.000.000, "8000000"]]
+      standalone_none: [executive]
 
   - id: C4-04
     category: C4
