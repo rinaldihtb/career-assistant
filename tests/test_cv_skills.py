@@ -65,6 +65,10 @@ def test_vocab_prefilter_gives_same_result_as_full_regex():
         ("Computer Vision (YOLO)", ["Computer Vision", "YOLO"]),
         ("English (Intermediate)", ["English"]),
         ("HTML/CSS", ["HTML", "CSS"]),
+        ("A/B Testing", ["A/B Testing"]),
+        ("CI/CD (GitHub Actions)", ["CI/CD", "GitHub Actions"]),
+        ("UI/UX Design", ["UI/UX Design"]),
+        ("Bahasa Indonesia", []),
         ("Python (Pandas, NumPy)", ["Python", "Pandas", "NumPy"]),
         ("Communication", []),
         ("R", []),
@@ -87,6 +91,29 @@ def test_build_cv_skills_cv_only_alias_word():
     cv = build_cv_skills(["Microsoft Office (Word, Excel)", "Go"])
     assert cv.vocab == {"Microsoft Office", "Microsoft Word", "Excel", "Golang"}
     assert cv.extras == ()
+
+
+def test_build_cv_skills_keeps_slash_terms_and_drops_fragments():
+    cv = build_cv_skills(["A/B Testing", "SAP FI/CO", "Inggris", "Indonesia"])
+    assert cv.vocab == {"A/B Testing", "SAP", "English"}
+    assert cv.extras == ()
+
+
+@pytest.mark.parametrize(
+    "text", ["Mampu berbahasa Inggris dengan baik", "Bahasa Inggris aktif", "Fluent in English"]
+)
+def test_english_vocab_aliases(text):
+    assert "English" in vocab_in_text(text)
+
+
+def test_match_skills_ab_testing_is_matched_not_missing():
+    cv = build_cv_skills(["A/B Testing", "SQL"])
+    description = "Melakukan A/B testing kampanye dan analisis dengan SQL."
+
+    result = match_skills(cv, vocab_in_text(description), description)
+
+    assert set(result.matched) == {"A/B Testing", "SQL"}
+    assert result.missing == ()
 
 
 def test_match_skills_portion_and_missing_sorted_by_frequency():
