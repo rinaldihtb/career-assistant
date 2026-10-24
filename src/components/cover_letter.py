@@ -29,6 +29,7 @@ from components.job_description import description_to_markdown, escape_markdown
 from cv.ingest import CV_STATE_KEY
 from cv.letter import (
     LANGUAGE_NAMES,
+    LENGTH_LABELS,
     LETTER_LENGTHS,
     NAME_PLACEHOLDER,
     CoverLetterResult,
@@ -166,7 +167,7 @@ def _render_letter(state: dict[str, Any], match: JobMatch, description: str | No
                 "Panjang",
                 options=LETTER_LENGTHS,
                 index=LETTER_LENGTHS.index(DEFAULT_SETTINGS.words),
-                format_func=lambda words: f"± {words} kata",
+                format_func=LENGTH_LABELS.get,
                 key=WORDS_KEY,
             )
             with st.container(horizontal=True):
@@ -266,7 +267,7 @@ def letter_caption(entry: dict[str, Any]) -> str:
     usage = entry["result"].usage
     tokens = f"{usage.total_tokens:,}".replace(",", ".")
     return (
-        f"{LANGUAGE_NAMES[settings.language]} · ± {settings.words} kata · "
+        f"{LANGUAGE_NAMES[settings.language]} · {LENGTH_LABELS[settings.words]} · "
         f"{usage.llm_calls} panggilan LLM ({tokens} token)."
     )
 

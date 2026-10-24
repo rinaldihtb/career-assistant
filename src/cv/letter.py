@@ -29,6 +29,10 @@ from models.agent import LLMUsage
 LetterLanguage = Literal["id", "en"]
 LANGUAGE_NAMES: dict[str, str] = {"id": "Bahasa Indonesia", "en": "English"}
 LETTER_LENGTHS = (150, 250, 350)
+# Label tanpa angka: target kata hanya arahan untuk LLM. Hasil terukur (make sample-letter,
+# 15 surat) rata-rata 21% lebih pendek dari target, paling jauh 32%; jumlah kata sebenarnya
+# ditampilkan di bawah surat.
+LENGTH_LABELS: dict[int, str] = {150: "Singkat", 250: "Standar", 350: "Panjang"}
 NAME_PLACEHOLDER = "[Nama Anda]"
 # Target kata per paragraf, bukan hanya total: dengan "total sekitar N kata" saja, 15 surat
 # (make sample-letter) rata-rata 24% lebih pendek dari target dan paling jauh 40%.

@@ -154,7 +154,8 @@ def test_opening_writes_letter_once_with_default_settings(letters):
     text = app.text_area[0].value
     assert text.startswith("Yth. Tim Rekrutmen PT Alpha,\n\nSaya melamar posisi ini.")
     assert text.endswith("Hormat saya,\nBudi Contoh")
-    assert "Bahasa Indonesia · ± 250 kata · 1 panggilan LLM (1.620 token)." in _texts(app)
+    assert "Bahasa Indonesia · Standar · 1 panggilan LLM (1.620 token)." in _texts(app)
+    assert app.selectbox(key=WORDS_KEY).options == ["Singkat", "Standar", "Panjang"]
     assert not app.download_button(key="cv_letter_download").disabled
 
     app.run()
@@ -268,4 +269,4 @@ def test_letter_caption_shows_settings_and_cost():
         "result": CoverLetterResult(letter=LETTER, usage=LETTER_USAGE),
     }
 
-    assert letter_caption(entry) == "English · ± 150 kata · 1 panggilan LLM (1.620 token)."
+    assert letter_caption(entry) == "English · Singkat · 1 panggilan LLM (1.620 token)."
