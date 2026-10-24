@@ -60,6 +60,7 @@ from agents.prompts import (
     SUPERVISOR_CLARIFY_MESSAGE,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_FAILED_MESSAGE,
+    SUPERVISOR_GENERAL_CV_MESSAGE,
     SUPERVISOR_GENERAL_MESSAGE,
     SUPERVISOR_NO_HISTORY,
     SUPERVISOR_PLANNER_CV_AGENTS,
@@ -88,6 +89,10 @@ MAX_HISTORY_MESSAGES = 6
 MAX_HISTORY_CHARS = 600
 # cv01 (set eval Cocokkan CV) punya skill terbanyak: 15; profil ringkas tetap di bawah 150 token.
 MAX_PROFILE_SKILLS = 15
+# Tingkat jabatan yang dibuang dari posisi tujuan (core_role). Senioritas selalu dibuang; tingkat
+# lain hanya jika sisanya masih minimal dua kata, agar "Account Executive" dan "HR Officer" utuh.
+SENIORITY_WORDS = frozenset({"senior", "junior", "sr", "jr"})
+LEVEL_WORDS = frozenset({"executive", "staff", "officer"})
 
 AGENT_TO_NODE: dict[str, str] = {
     "sql": "sql_agent",
@@ -105,6 +110,20 @@ FIXED_MESSAGES: dict[str, str] = {
 
 # Baris lowongan di jawaban: "- [ID:56] Judul - Perusahaan (Lokasi): catatan".
 _JOB_LINE = re.compile(r"^\s*[-*•]?\s*\[ID:\s*\d+\]", re.IGNORECASE)
+# Pemisah beberapa posisi dalam satu posisi tujuan ("A dan B", "A / B", "A, B"). "&" bukan
+# pemisah: "Sales & Marketing" satu posisi.
+_ROLE_SEPARATOR = re.compile(r"\s+(?:dan|atau|and|or)\s+|\s*[/,;|]\s*", re.IGNORECASE)
+# Frasa yang merujuk pengguna di pertanyaan mandiri, dengan kata depan opsional di depannya.
+_SELF_REFERENCE = re.compile(
+    r"\b(?:(?P<sesuai>sesuai)\s+(?:dengan\s+)?|(?P<prep>dengan|untuk|buat|bagi)\s+)?"
+    r"(?P<ref>cv[\s-]?(?:ku|saya|aku)"
+    r"|profil[\s-]?(?:ku|saya|aku)"
+    r"|posisi\s+(?:yang\s+)?(?:ku|saya\s+|aku\s+)tuju"
+    r"|(?:posisi\s+)?(?:tujuan|incaran)[\s-]?(?:ku|saya|aku)"
+    r"|(?:untuk|buat|bagi)[\s-]?(?:ku|saya|aku))\b",
+    re.IGNORECASE,
+)
+_PREPOSITION_REF = re.compile(r"(?:untuk|buat|bagi)", re.IGNORECASE)
 
 
 class SubTask(BaseModel):
@@ -305,6 +324,11 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
     oleh JSON schema, dan pertanyaan mandiri per sub-tugas didapat tanpa panggilan
     kedua. Batas 3 sub-tugas ditegakkan di Python, bukan hanya di prompt; kelebihannya
     masuk ``skipped`` agar pengguna tahu bagian mana yang belum dijawab.
+
+    Saat CV aktif, rujukan diri yang tersisa di pertanyaan mandiri ``sql``/``rag`` diganti
+    dengan posisi tujuan inti (``replace_self_references``) sebelum dedup. Agent itu tidak
+    membaca profil, dan aturan prompt saja tidak cukup: C3-03 menyisakan "CV-ku" di 2 dari 4
+    run, sehingga RAG mengembalikan lowongan Sales untuk CV HR.
     """
     question = state["question"].strip()
     usage = LLMUsage()
@@ -327,7 +351,16 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
     if plan.response != "answer":
         return _plan_update(plan.response, [], usage)
 
-    subtasks = _unique_subtasks(plan.subtasks)
+    tasks = plan.subtasks
+    if profile is not None:
+        role = profile_role(profile)
+        tasks = [
+            task
+            if task.agent in CV_AGENTS
+            else task.model_copy(update={"question": replace_self_references(task.question, role)})
+            for task in tasks
+        ]
+    subtasks = _unique_subtasks(tasks)
     if not subtasks:
         return _fallback(question, usage, "Planner tidak memberi sub-tugas")
     skipped = [*plan.skipped, *(task["question"] for task in subtasks[MAX_SUBTASKS:])]
@@ -374,13 +407,18 @@ def run_cv_node(task: SubTaskInput, runtime: Runtime[SupervisorContext]) -> dict
     return {"collected": [(task["index"], result)]}
 
 
-def respond(state: SupervisorState) -> dict:
+def respond(state: SupervisorState, runtime: Runtime[SupervisorContext]) -> dict:
     """Node pesan tetap tanpa LLM: tanya balik, tolak, di luar topik, data tidak tersedia.
 
     Jawaban ini tidak butuh data, dan pesan tetap tidak bisa mengarang lowongan (dengan
-    LLM, "Ada lowongan?" pernah dijawab dengan 5 lowongan acak).
+    LLM, "Ada lowongan?" pernah dijawab dengan 5 lowongan acak). Saat CV aktif, respons
+    ``out_of_scope`` memakai ``SUPERVISOR_GENERAL_CV_MESSAGE`` yang menyebut kemampuan berbasis
+    CV; respons lain dan semua respons tanpa CV tetap memakai ``FIXED_MESSAGES``.
     """
-    result = AgentResult(answer=FIXED_MESSAGES[state["response"]], source="general")
+    message = FIXED_MESSAGES[state["response"]]
+    if state["response"] == "out_of_scope" and runtime.context.profile is not None:
+        message = SUPERVISOR_GENERAL_CV_MESSAGE
+    result = AgentResult(answer=message, source="general")
     return {"subresults": [], "result": _with_totals(result, state, [])}
 
 
@@ -506,16 +544,81 @@ def format_profile(profile: CVProfile) -> str:
     jadi nama, kontak, lokasi, perusahaan, dan riwayat kerja tidak dikirim. Skill dibatasi
     ``MAX_PROFILE_SKILLS`` dengan urutan profil. Baris yang kosong dilewati, sama dengan
     ``cv.plan.plan_prompt_input``.
+
+    Posisi tujuan dikirim sebagai ``target_roles`` (tanpa tingkat jabatan, beberapa posisi
+    digabung "atau"), bukan teks mentah: planner menyalin "Sales & Marketing Executive" ke
+    pertanyaan SQL/RAG di 4 dari 4 run walau dilarang aturan prompt (C3-04, C4-03).
     """
     education = " ".join(p for p in (profile.education_level, profile.education_major) if p)
     skills = profile.skills[:MAX_PROFILE_SKILLS]
+    roles = " atau ".join(target_roles(profile.target_role))
     lines = [
-        f"Posisi tujuan: {profile.target_role}" if profile.target_role else "",
+        f"Posisi tujuan: {roles}" if roles else "",
         f"Pengalaman: {profile.experience_label}",
         f"Pendidikan: {education}" if education else "",
         f"Skill: {', '.join(skills)}" if skills else "",
     ]
     return "\n".join(line for line in lines if line)
+
+
+def core_role(role: str) -> str:
+    """Satu posisi tanpa tingkat jabatan: "Senior Teknisi Listrik" -> "Teknisi Listrik".
+
+    SQL agent mencocokkan judul kata per kata: '%sales & marketing executive%' hanya 1 lowongan
+    bergaji di atas 8 juta, '%sales%' atau '%marketing%' 24. Kata ``SENIORITY_WORDS`` selalu
+    dibuang; kata ``LEVEL_WORDS`` hanya jika sisanya minimal dua kata ("Sales & Marketing
+    Executive" -> "Sales & Marketing", "Account Executive" tetap). Tanda baca bukan kata.
+    """
+    words = role.split()
+    without_seniority = [w for w in words if w.lower().strip(".") not in SENIORITY_WORDS] or words
+    core = [w for w in without_seniority if w.lower().strip(".") not in LEVEL_WORDS]
+    named = [w for w in core if any(ch.isalnum() for ch in w)]
+    return " ".join(core if len(named) >= 2 else without_seniority)
+
+
+def target_roles(target_role: str | None) -> list[str]:
+    """Posisi tujuan dipecah per posisi lalu diambil intinya, tanpa duplikat, urutan tetap.
+
+    Profil bisa berisi dua posisi dalam satu teks ("Fullstack Developer dan Data Analyst");
+    sebagai satu pola judul hasilnya 0 lowongan, sedangkan '%data analyst%' 30 dan
+    '%fullstack%'/'%full stack%'/'%full-stack%' 4.
+    """
+    roles: list[str] = []
+    for part in _ROLE_SEPARATOR.split(target_role or ""):
+        role = core_role(part.strip())
+        if role and role.lower() not in {r.lower() for r in roles}:
+            roles.append(role)
+    return roles
+
+
+def profile_role(profile: CVProfile) -> str:
+    """Posisi tujuan inti untuk pertanyaan mandiri SQL/RAG; tanpa posisi, 1-2 skill pertama.
+
+    Returns:
+        Posisi digabung "atau" (sama dengan baris "Posisi tujuan" di ``format_profile``),
+        atau string kosong jika profil tidak punya posisi maupun skill.
+    """
+    return " atau ".join(target_roles(profile.target_role) or profile.skills[:2])
+
+
+def replace_self_references(question: str, role: str) -> str:
+    """Ganti frasa yang merujuk pengguna ("CV-ku", "untukku", "posisi yang kutuju") dengan ``role``.
+
+    "cocok dengan CV-ku" -> "cocok untuk <role>", "sesuai CV-ku" -> "sesuai untuk <role>",
+    "posisi incaranku" -> "<role>". Spasi berlebih dirapikan. ``role`` kosong: pertanyaan
+    dikembalikan apa adanya.
+    """
+    if not role:
+        return question
+
+    def _replacement(match: re.Match[str]) -> str:
+        if match.group("sesuai"):
+            return f"sesuai untuk {role}"
+        if match.group("prep") or _PREPOSITION_REF.match(match.group("ref")):
+            return f"untuk {role}"
+        return role
+
+    return " ".join(_SELF_REFERENCE.sub(_replacement, question).split())
 
 
 def _compact_assistant(content: str) -> str:

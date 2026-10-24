@@ -226,7 +226,7 @@ def test_case_file_is_consistent():
 
     assert profiles_path.parent == Path("tests/eval/results")
     assert profiles_path.name.startswith("cv-") and profiles_path.suffix == ".json"
-    assert len(ids) == len(set(ids)) == 30
+    assert len(ids) == len(set(ids)) == 34
     for item in cases:
         assert item["cv"] in {"cv01", "cv02", "cv03", "cv04", "cv05", None}
         assert set(item["expected"]["agents"]) <= set(AGENT_TO_NODE)

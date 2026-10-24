@@ -26,6 +26,7 @@ from agents.prompts import (
     SUPERVISOR_CLARIFY_MESSAGE,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_FAILED_MESSAGE,
+    SUPERVISOR_GENERAL_CV_MESSAGE,
     SUPERVISOR_GENERAL_MESSAGE,
     SUPERVISOR_NO_HISTORY,
     SUPERVISOR_REFUSE_MESSAGE,
@@ -40,10 +41,14 @@ from agents.supervisor_agent import (
     CVPlan,
     Plan,
     SupervisorContext,
+    core_role,
     format_history,
     format_profile,
     planner_messages,
+    profile_role,
+    replace_self_references,
     run_supervisor,
+    target_roles,
 )
 from cv.match import JobMatch, MatchResult
 from cv.profile import CVProfile, Experience
@@ -603,3 +608,147 @@ def test_format_history_keeps_job_ids_of_cv_answer():
 
     assert "- [ID:5] Data Analyst 5 - PT 5 (Jakarta Raya)" in line
     assert "- [ID:3] Data Analyst 3 - PT 3 (Jakarta Raya)" in line
+
+
+# --- CV aktif: pesan umum, posisi tujuan inti, rujukan diri ------------------
+
+
+def test_out_of_scope_with_cv_uses_cv_message(jobs_db, store):
+    llm = ScriptedLLM(plan=plan_reply(response="out_of_scope", name="CVPlan"))
+    result = _run("Halo", llm, store, jobs_db, profile=PROFILE, matches=MATCHES)
+
+    assert result.source == "general"
+    assert result.answer == SUPERVISOR_GENERAL_CV_MESSAGE
+    assert result.usage.llm_calls == 1
+
+
+@pytest.mark.parametrize("response", ["clarify", "refuse", "unsupported"])
+def test_other_fixed_messages_do_not_change_with_cv(jobs_db, store, response):
+    llm = ScriptedLLM(plan=plan_reply(response=response, name="CVPlan"))
+    result = _run("x", llm, store, jobs_db, profile=PROFILE, matches=MATCHES)
+
+    assert result.answer != SUPERVISOR_GENERAL_CV_MESSAGE
+    assert result.answer != SUPERVISOR_GENERAL_MESSAGE
+
+
+def test_strategy_question_combines_cv_match_and_cv_gap(jobs_db, store):
+    q_match, q_gap = (
+        "Lowongan yang paling cocok dengan CV-ku",
+        "Skill yang perlu kupelajari dari CV-ku",
+    )
+    llm = ScriptedLLM(plan=plan_reply(("cv_match", q_match), ("cv_gap", q_gap), name="CVPlan"))
+    result = _run("Saran biar cepat kerja?", llm, store, jobs_db, profile=PROFILE, matches=MATCHES)
+
+    assert result.source == "multi"
+    assert [part.source for part in result.parts] == ["cv", "cv"]
+    assert result.job_ids == [5, 3]
+    assert "- Power BI: 2 dari 2 lowongan" in result.answer
+    assert [call.step for call in result.usage.calls] == ["planner"]
+
+
+def test_self_reference_in_rag_question_is_replaced_with_core_role(jobs_db, fake_vector_store):
+    profile = PROFILE.model_copy(update={"target_role": "Senior Data Analyst"})
+    llm = ScriptedLLM(
+        plan=plan_reply(("rag", "Lowongan yang cocok dengan CV-ku di Jakarta"), name="CVPlan")
+    )
+    store = fake_vector_store([(1, LONG, 0.30)])
+    state = _state("Yang cocok untukku di Jakarta?", llm, store, jobs_db, profile=profile)
+
+    assert state["subtasks"] == [
+        {"agent": "rag", "question": "Lowongan yang cocok untuk Data Analyst di Jakarta"}
+    ]
+
+
+def test_self_reference_without_cv_is_kept(jobs_db, fake_vector_store):
+    llm = ScriptedLLM(plan=plan_reply(("rag", "Lowongan untukku di Jakarta")))
+    store = fake_vector_store([(1, LONG, 0.30)])
+    state = _state("Lowongan untukku di Jakarta", llm, store, jobs_db)
+
+    assert state["subtasks"] == [{"agent": "rag", "question": "Lowongan untukku di Jakarta"}]
+
+
+def test_self_references_that_become_identical_run_once(jobs_db, fake_vector_store):
+    llm = ScriptedLLM(
+        plan=plan_reply(
+            ("rag", "Lowongan untukku di Bandung"),
+            ("rag", "Lowongan untuk Data Analyst di Bandung"),
+            name="CVPlan",
+        )
+    )
+    store = fake_vector_store([(1, LONG, 0.30)])
+    state = _state("x", llm, store, jobs_db, profile=PROFILE)
+
+    assert state["subtasks"] == [
+        {"agent": "rag", "question": "Lowongan untuk Data Analyst di Bandung"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "expected"),
+    [
+        (
+            "Lowongan yang cocok dengan CV-ku di Surabaya",
+            "Lowongan yang cocok untuk HR di Surabaya",
+        ),
+        ("Lowongan yang sesuai CV saya", "Lowongan yang sesuai untuk HR"),
+        ("Lowongan sesuai dengan profilku di Medan", "Lowongan sesuai untuk HR di Medan"),
+        ("Lowongan untukku di luar Jakarta", "Lowongan untuk HR di luar Jakarta"),
+        ("Lowongan buat saya di Bekasi", "Lowongan untuk HR di Bekasi"),
+        ("Berapa rata-rata gaji untuk posisi yang kutuju?", "Berapa rata-rata gaji untuk HR?"),
+        ("Gaji tertinggi posisi yang saya tuju", "Gaji tertinggi HR"),
+        ("Ada berapa lowongan posisi incaranku?", "Ada berapa lowongan HR?"),
+        ("Lowongan HR di Bali", "Lowongan HR di Bali"),
+        ("Lowongan cv writer di Bali", "Lowongan cv writer di Bali"),
+    ],
+)
+def test_replace_self_references(question, expected):
+    assert replace_self_references(question, "HR") == expected
+
+
+def test_replace_self_references_without_role_keeps_question():
+    assert replace_self_references("Lowongan untukku", "") == "Lowongan untukku"
+
+
+@pytest.mark.parametrize(
+    ("role", "expected"),
+    [
+        ("Sales & Marketing Executive", "Sales & Marketing"),
+        ("Senior Teknisi Listrik", "Teknisi Listrik"),
+        ("Jr. Data Analyst", "Data Analyst"),
+        ("Staff Admin Gudang", "Admin Gudang"),
+        ("Account Executive", "Account Executive"),
+        ("HR Officer", "HR Officer"),
+        ("Senior Staff", "Staff"),
+        ("Data Analyst", "Data Analyst"),
+    ],
+)
+def test_core_role_drops_job_level(role, expected):
+    assert core_role(role) == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("Fullstack Developer dan Data Analyst", ["Fullstack Developer", "Data Analyst"]),
+        ("Data Analyst / Senior Data Analyst", ["Data Analyst"]),
+        ("Admin, Kasir atau Barista", ["Admin", "Kasir", "Barista"]),
+        ("Sales & Marketing Executive", ["Sales & Marketing"]),
+        ("", []),
+        (None, []),
+    ],
+)
+def test_target_roles_splits_and_deduplicates(target, expected):
+    assert target_roles(target) == expected
+
+
+def test_format_profile_sends_core_roles():
+    profile = CVProfile(target_role="Fullstack Developer dan Senior Data Analyst")
+
+    assert format_profile(profile).splitlines()[0] == (
+        "Posisi tujuan: Fullstack Developer atau Data Analyst"
+    )
+
+
+def test_profile_role_falls_back_to_first_two_skills():
+    assert profile_role(CVProfile(skills=["SQL", "Excel", "Python"])) == "SQL atau Excel"
+    assert profile_role(CVProfile()) == ""
