@@ -76,6 +76,11 @@ sample-match:
 eval-cv:
 	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_cv_eval $(ARGS)
 
+.PHONY: eval-cv-chat
+
+eval-cv-chat:
+	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_cv_chat_eval $(ARGS)
+
 .PHONY: sample-plan
 
 sample-plan:

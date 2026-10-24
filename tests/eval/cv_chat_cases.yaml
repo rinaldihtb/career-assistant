@@ -1,0 +1,250 @@
+# Set eval Asisten Karier dengan CV aktif (make eval-cv-chat).
+#
+# v1.0. Profil dan kandidat lowongan cv01..cv05 dibaca dari JSON eval Cocokkan CV di bawah;
+# hasil Cocokkan CV dibangun ulang dari kandidat itu tanpa embedding (run_cv_chat_eval.py).
+# Posisi tujuan: cv01 Data Analyst, cv02 Graphic Designer, cv03 HR Generalist,
+# cv04 Sales & Marketing Executive, cv05 Financial Analyst.
+#
+# KEPUTUSAN (berlaku untuk semua kasus):
+# K1 Profil dipakai hanya jika pengguna merujuk dirinya ("untukku", "CV-ku", "posisi yang kutuju").
+#    Pertanyaan lain dikerjakan persis seperti tanpa CV (standalone_none: posisi tujuan).
+# K2 "Yang cocok untukku" tanpa syarat lain -> cv_match. Permintaan lowongan umum tanpa posisi,
+#    bidang, kota, atau ID ("Ada info kerjaan?") juga cv_match: profil memberi konteks.
+# K3 "Yang cocok untukku" + kota/pengecualian kota -> rag; + gaji -> sql. Posisi tujuan dari
+#    profil wajib ada di pertanyaan mandiri (standalone_all).
+# K4 "Skill apa yang kurang/perlu dipelajari" -> cv_gap.
+# K5 Isi jawaban SQL/RAG tidak dinilai di set ini (tugas make eval); yang dinilai rute,
+#    respons, isi jawaban agent CV, sitasi, dan pertanyaan mandiri.
+#
+# FORMAT KASUS
+# id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
+# expected.response : answer | clarify | refuse | out_of_scope | unsupported (default answer)
+# expected.agents   : agent per sub-tugas, urutan tidak dinilai; agents_alt: alternatif yang sah
+# expected.report_only: true -> hanya dicetak, tidak dihitung lulus/gagal
+# checks.standalone_all : daftar grup frasa; tiap grup minimal satu frasa ada di pertanyaan mandiri
+# checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
+# Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
+# ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
+version: "1.0"
+profiles: tests/eval/results/cv-c1e3-skills-20261024-1349.json
+cases:
+  # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
+  - id: C1-01
+    category: C1
+    cv: cv01
+    question: Dari CV-ku, posisi apa yang paling pas buat dilamar?
+    expected: {agents: [cv_match]}
+
+  - id: C1-02
+    category: C1
+    cv: cv02
+    question: Ada lowongan yang pas buat saya?
+    expected: {agents: [cv_match]}
+
+  - id: C1-03
+    category: C1
+    cv: cv03
+    question: Berdasarkan CV saya, kerjaan apa yang cocok?
+    expected: {agents: [cv_match]}
+
+  - id: C1-04
+    category: C1
+    cv: cv04
+    question: rekomendasiin loker sesuai profilku dong
+    expected: {agents: [cv_match]}
+
+  - id: C1-05
+    category: C1
+    cv: cv05
+    question: Lowongan apa yang cocok untuk saya?
+    expected: {agents: [cv_match]}
+
+  # --- C2: skill yang kurang (K4) ---------------------------------------------
+  - id: C2-01
+    category: C2
+    cv: cv01
+    question: Sebaiknya aku belajar skill apa dulu?
+    expected: {agents: [cv_gap]}
+
+  - id: C2-02
+    category: C2
+    cv: cv02
+    question: Apa saja skill yang masih kurang di CV saya?
+    expected: {agents: [cv_gap]}
+
+  - id: C2-03
+    category: C2
+    cv: cv03
+    question: Biar peluangku lebih besar, skill apa yang harus ditambah?
+    expected: {agents: [cv_gap]}
+
+  - id: C2-04
+    category: C2
+    cv: cv04
+    question: skill apa yg kurang dari cv ku
+    expected: {agents: [cv_gap]}
+
+  - id: C2-05
+    category: C2
+    cv: cv05
+    question: Skill apa yang paling sering diminta tapi belum saya punya?
+    expected: {agents: [cv_gap]}
+
+  # --- C3: cocok untukku + kota -> rag dengan posisi tujuan (K3) ---------------
+  - id: C3-01
+    category: C3
+    cv: cv01
+    question: Yang cocok untukku di Jakarta ada?
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[data analyst, data analis, analis data], [jakarta]]
+
+  - id: C3-02
+    category: C3
+    cv: cv02
+    question: Ada lowongan buat aku di Bandung?
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[graphic design, desain grafis, desainer grafis], [bandung]]
+
+  - id: C3-03
+    category: C3
+    cv: cv03
+    question: Lowongan yang sesuai CV-ku di Surabaya
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[hr, human resource, sdm, personalia], [surabaya]]
+
+  - id: C3-04
+    category: C3
+    cv: cv04
+    question: Kalau di Bekasi ada yang cocok buat saya?
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[sales, marketing, pemasaran], [bekasi]]
+
+  - id: C3-05
+    category: C3
+    cv: cv05
+    question: Lowongan untuk saya di luar Jakarta
+    expected: {agents: [rag]}
+    checks:
+      standalone_all:
+        - [financial, finance, keuangan]
+        - [di luar jakarta, selain jakarta, kecuali jakarta]
+
+  # --- C4: statistik untuk posisi tujuan -> sql (K3) --------------------------
+  - id: C4-01
+    category: C4
+    cv: cv01
+    question: Berapa rata-rata gaji untuk posisi yang kutuju?
+    expected: {agents: [sql]}
+    checks:
+      standalone_all: [[data analyst, data analis, analis data]]
+
+  - id: C4-02
+    category: C4
+    cv: cv03
+    question: Ada berapa lowongan untuk posisi incaranku?
+    expected: {agents: [sql]}
+    checks:
+      standalone_all: [[hr, human resource, sdm, personalia]]
+
+  - id: C4-03
+    category: C4
+    cv: cv04
+    question: Lowongan untukku yang gajinya di atas 8 juta
+    expected: {agents: [sql]}
+    checks:
+      standalone_all: [[sales, marketing, pemasaran], [8 juta, 8.000.000, "8000000"]]
+
+  - id: C4-04
+    category: C4
+    cv: cv05
+    question: Gaji tertinggi untuk posisi yang saya incar berapa?
+    expected: {agents: [sql]}
+    checks:
+      standalone_all: [[financial, finance, keuangan]]
+
+  # --- C5: tidak merujuk diri -> tanpa profil (K1) ----------------------------
+  - id: C5-01
+    category: C5
+    cv: cv02
+    question: Berapa total lowongan di data?
+    expected: {agents: [sql]}
+    checks:
+      standalone_none: [graphic, desain, design]
+
+  - id: C5-02
+    category: C5
+    cv: cv05
+    question: Lowongan barista di Bali
+    expected: {agents: [rag]}
+    checks:
+      standalone_none: [financial, finance, keuangan, analyst]
+
+  - id: C5-03
+    category: C5
+    cv: cv03
+    question: Halo!
+    expected: {response: out_of_scope, agents: []}
+
+  - id: C5-04
+    category: C5
+    cv: cv01
+    question: Hapus semua lowongan data analyst
+    expected: {response: refuse, agents: []}
+
+  # --- C6: gabungan -------------------------------------------------------------
+  - id: C6-01
+    category: C6
+    cv: cv04
+    question: Lowongan yang cocok dengan CV-ku dan skill apa yang kurang?
+    expected: {agents: [cv_match, cv_gap]}
+
+  - id: C6-02
+    category: C6
+    cv: cv01
+    question: Tunjukkan lowongan yang cocok buatku, lalu berapa jumlah lowongan data analyst di Jakarta?
+    expected: {agents: [cv_match, sql]}
+
+  # --- C7: lanjutan ---------------------------------------------------------------
+  - id: C7-01
+    category: C7
+    cv: cv02
+    history:
+      - {role: user, content: "Lowongan yang cocok dengan CV-ku?"}
+      - {role: assistant, content: "Dari profilmu (Graphic Designer · 5+ tahun), ini 5 lowongan teratas hasil Cocokkan CV: ..."}
+    question: Yang di Jakarta saja
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[graphic design, desain grafis, desainer grafis], [jakarta]]
+
+  - id: C7-02
+    category: C7
+    cv: cv05
+    history:
+      - {role: user, content: "Skill apa yang kurang dari CV saya?"}
+      - {role: assistant, content: "Dari 10 lowongan yang paling cocok dengan CV-mu, skill yang paling sering diminta dan belum ada di CV: ..."}
+    question: Kalau lowongan yang cocok buatku?
+    expected: {agents: [cv_match]}
+
+  # --- C8: permintaan umum dengan CV aktif -> cv_match (K2) ---------------------
+  - id: C8-01
+    category: C8
+    cv: cv03
+    question: Ada info kerjaan?
+    expected: {agents: [cv_match]}
+
+  # --- N: pertanyaan tentang CV saat CV belum ada (hanya dilaporkan) -------------
+  - id: N-01
+    category: N
+    cv: null
+    question: Dari CV-ku, lowongan mana yang pas?
+    expected: {report_only: true, agents: []}
+
+  - id: N-02
+    category: N
+    cv: null
+    question: Skill apa yang kurang dari CV saya?
+    expected: {report_only: true, agents: []}

@@ -80,7 +80,9 @@ class AgentResult(BaseModel):
         source: Agent yang menghasilkan jawaban. ``"general"`` berarti supervisor
             menjawab sendiri dengan pesan tetap (sapaan atau di luar topik).
             ``"multi"`` berarti jawaban gabungan beberapa sub-tugas; isinya ada di ``parts``.
-        job_ids: ID lowongan yang dikutip (RAG) atau muncul di hasil query (SQL).
+            ``"cv"`` berarti jawaban dari hasil Cocokkan CV di sesi, tanpa LLM.
+        job_ids: ID lowongan yang dikutip (RAG), muncul di hasil query (SQL), atau
+            ditampilkan dari hasil Cocokkan CV (CV).
         sql: Query yang akhirnya dieksekusi (khusus SQL agent).
         rows: Data mentah hasil query atau lowongan yang ditemukan, untuk UI dan debug.
         usage: Jumlah panggilan LLM dan token.
@@ -91,7 +93,7 @@ class AgentResult(BaseModel):
     """
 
     answer: str
-    source: Literal["rag", "sql", "general", "multi"]
+    source: Literal["rag", "sql", "general", "multi", "cv"]
     job_ids: list[int] = Field(default_factory=list)
     sql: str | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)

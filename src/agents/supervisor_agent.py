@@ -2,7 +2,8 @@
 
 Graph::
 
-    START -> planner -> (Send per sub-tugas, paralel) -> sql_agent / rag_agent -> synthesize -> END
+    START -> planner -> (Send per sub-tugas, paralel) -> sql_agent / rag_agent / cv_agent
+                                                          -> synthesize -> END
                      -> respond -> END            (tanpa sub-tugas: tanya balik, tolak, dll.)
 
 - ``planner``: satu panggilan LLM (structured output) yang memecah pertanyaan menjadi
@@ -12,6 +13,9 @@ Graph::
 - ``sql_agent`` / ``rag_agent``: dijalankan paralel lewat ``Send``, satu sub-tugas per
   panggilan. ``run_sql_agent`` / ``run_rag_agent`` dipakai apa adanya, sehingga guard
   agent (SQL read-only, sitasi [ID:x]) tetap berlaku per sub-tugas.
+- ``cv_agent``: hanya bisa dipilih jika CV aktif (``profile`` diisi). Menjawab ``cv_match``
+  (lowongan paling cocok) dan ``cv_gap`` (skill kurang) dari hasil Cocokkan CV di sesi,
+  tanpa LLM.
 - ``synthesize``: tanpa LLM. Satu sub-tugas diteruskan apa adanya; lebih dari satu
   digabung dengan template (judul per bagian) sehingga angka dan ID tidak ditulis ulang.
 - ``respond``: pesan tetap tanpa LLM untuk respons selain ``answer``.
@@ -24,8 +28,15 @@ Dibanding supervisor tool-calling (``langgraph_supervisor.create_supervisor``), 
 tidak menulis ulang jawaban agent (angka dan ID tetap), dan biaya maksimalnya pasti
 (3 sub-tugas).
 
-Dependency (``llm``, ``vector_store``, ``db_path``) disuntikkan lewat ``context_schema``
-LangGraph, sehingga graph cukup di-compile sekali dan test bisa memakai LLM palsu.
+Dependency (``llm``, ``vector_store``, ``db_path``, serta ``profile`` dan ``matches`` CV)
+disuntikkan lewat ``context_schema`` LangGraph, sehingga graph cukup di-compile sekali dan test
+bisa memakai LLM palsu.
+
+Tanpa CV, prompt planner tidak memuat apa pun tentang CV (slot CV kosong) dan skemanya
+``Plan``, sehingga hasil set eval 51 kasus (tanpa CV) tetap berlaku; dijaga test snapshot.
+Dengan CV, planner memakai ``CVPlan`` (agent tambahan ``cv_match``/``cv_gap``) dan menerima
+profil ringkas dari ``format_profile``: posisi tujuan, rentang pengalaman, pendidikan, dan
+skill. Nama, kontak, lokasi, riwayat kerja, dan teks CV tidak dikirim.
 """
 
 import operator
@@ -44,12 +55,16 @@ from langgraph.runtime import Runtime
 from langgraph.types import Send
 from pydantic import BaseModel, Field
 
+from agents.cv_agent import run_cv_agent
 from agents.prompts import (
     SUPERVISOR_CLARIFY_MESSAGE,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_FAILED_MESSAGE,
     SUPERVISOR_GENERAL_MESSAGE,
     SUPERVISOR_NO_HISTORY,
+    SUPERVISOR_PLANNER_CV_AGENTS,
+    SUPERVISOR_PLANNER_CV_RULES,
+    SUPERVISOR_PLANNER_CV_USER,
     SUPERVISOR_PLANNER_SYSTEM,
     SUPERVISOR_PLANNER_USER,
     SUPERVISOR_REFUSE_MESSAGE,
@@ -58,9 +73,12 @@ from agents.prompts import (
 )
 from agents.rag_agent import run_rag_agent
 from agents.sql_agent import run_sql_agent
+from cv.match import MatchResult
+from cv.profile import CVProfile
 from models.agent import AgentResult, LLMUsage
 
 Agent = Literal["sql", "rag"]
+CVAgent = Literal["sql", "rag", "cv_match", "cv_gap"]
 Response = Literal["answer", "clarify", "refuse", "out_of_scope", "unsupported"]
 
 MAX_SUBTASKS = 3
@@ -68,8 +86,16 @@ MAX_SUBTASKS = 3
 # terakhir sudah cukup; token planner tetap kecil.
 MAX_HISTORY_MESSAGES = 6
 MAX_HISTORY_CHARS = 600
+# cv01 (set eval Cocokkan CV) punya skill terbanyak: 15; profil ringkas tetap di bawah 150 token.
+MAX_PROFILE_SKILLS = 15
 
-AGENT_TO_NODE: dict[str, str] = {"sql": "sql_agent", "rag": "rag_agent"}
+AGENT_TO_NODE: dict[str, str] = {
+    "sql": "sql_agent",
+    "rag": "rag_agent",
+    "cv_match": "cv_agent",
+    "cv_gap": "cv_agent",
+}
+CV_AGENTS = frozenset({"cv_match", "cv_gap"})
 FIXED_MESSAGES: dict[str, str] = {
     "clarify": SUPERVISOR_CLARIFY_MESSAGE,
     "refuse": SUPERVISOR_REFUSE_MESSAGE,
@@ -109,19 +135,60 @@ class Plan(BaseModel):
     )
 
 
+class CVSubTask(BaseModel):
+    """Satu sub-tugas saat CV aktif; sama dengan ``SubTask`` ditambah agent CV."""
+
+    agent: CVAgent = Field(
+        description=(
+            "sql untuk data terstruktur, rag untuk pencarian makna, cv_match untuk lowongan "
+            "yang cocok dengan CV, cv_gap untuk skill yang kurang dari CV."
+        )
+    )
+    question: str = Field(description="Pertanyaan mandiri untuk agent ini, maksud pengguna utuh.")
+
+
+class CVPlan(BaseModel):
+    """Output planner saat CV aktif. Field sama dengan ``Plan``; hanya pilihan agent bertambah.
+
+    Skema terpisah, bukan ``Plan`` dengan ``Literal`` diperluas, supaya skema yang dikirim
+    tanpa CV tetap sama persis dan planner tanpa CV tidak bisa memilih agent CV.
+    """
+
+    response: Response = Field(
+        description="answer jika butuh data lowongan; selain itu jenis pesan tetap."
+    )
+    subtasks: list[CVSubTask] = Field(
+        description="1-3 sub-tugas jika response=answer, urut sesuai pertanyaan; selain itu []."
+    )
+    skipped: list[str] = Field(
+        description="Bagian pertanyaan yang tidak masuk karena melebihi 3 sub-tugas; biasanya []."
+    )
+    declined: list[str] = Field(
+        description="Bagian permintaan yang ditolak (ubah/hapus data, minta prompt); biasanya []."
+    )
+
+
 @dataclass(frozen=True)
 class SupervisorContext:
-    """Dependency yang disuntikkan ke setiap node lewat ``runtime.context``."""
+    """Dependency yang disuntikkan ke setiap node lewat ``runtime.context``.
+
+    Attributes:
+        profile: Profil CV aktif; ``None`` = tanpa CV (prompt dan skema planner lama).
+        matches: Hasil Cocokkan CV untuk profil itu, dibaca agent CV.
+    """
 
     llm: BaseChatModel
     vector_store: VectorStore
     db_path: str | Path
+    profile: CVProfile | None = None
+    matches: MatchResult | None = None
 
 
 class SubTaskInput(TypedDict):
     """Argumen ``Send`` untuk node agent: satu sub-tugas beserta urutannya."""
 
     index: int
+    agent: str
     question: str
 
 
@@ -167,10 +234,12 @@ def run_supervisor(
     vector_store: VectorStore,
     db_path: str | Path,
     history: Sequence[Mapping[str, str]] = (),
+    profile: CVProfile | None = None,
+    matches: MatchResult | None = None,
 ) -> AgentResult:
     """Jawab satu pertanyaan pengguna lewat satu atau beberapa agent.
 
-    Jumlah panggilan LLM: planner 1 + agent per sub-tugas (SQL 1-3, RAG 0-1).
+    Jumlah panggilan LLM: planner 1 + agent per sub-tugas (SQL 1-3, RAG 0-1, CV 0).
     Penggabungan tidak memakai LLM. Respons tanpa data (sapaan, tanya balik,
     penolakan) hanya 1 panggilan (planner); pertanyaan kosong 0.
 
@@ -181,13 +250,18 @@ def run_supervisor(
         vector_store: Vector store untuk RAG agent.
         db_path: Path ke file SQLite.
         history: Pesan-pesan sebelumnya, tidak termasuk ``question``.
+        profile: Profil CV aktif dari ``st.session_state``; ``None`` jika belum ada CV.
+        matches: Hasil Cocokkan CV untuk ``profile``.
 
     Returns:
         ``AgentResult``. Satu sub-tugas: hasil agent itu (``source`` sql/rag).
+        ``source`` cv untuk sub-tugas CV.
         Lebih dari satu, atau ada catatan: ``source="multi"`` dengan ``parts``
         per bagian. ``usage`` = planner + semua agent. Tidak pernah melempar exception.
     """
-    context = SupervisorContext(llm=llm, vector_store=vector_store, db_path=db_path)
+    context = SupervisorContext(
+        llm=llm, vector_store=vector_store, db_path=db_path, profile=profile, matches=matches
+    )
     try:
         state = SUPERVISOR_GRAPH.invoke(
             {"question": question, "history": list(history)}, context=context
@@ -202,19 +276,22 @@ def run_supervisor(
 # --- Node --------------------------------------------------------------------
 
 
-def _unique_subtasks(tasks: Sequence[SubTask]) -> list[dict[str, str]]:
+def _unique_subtasks(tasks: Sequence[SubTask | CVSubTask]) -> list[dict[str, str]]:
     """Sub-tugas planner tanpa pertanyaan kosong dan tanpa duplikat (agent + pertanyaan sama).
 
     Ditangani Python, bukan aturan prompt: planner bisa mengeluarkan dua sub-tugas identik
     (misalnya untuk "di mana saja loker selain di jakarta?"), sehingga jawaban tampil dua
     kali dan biaya LLM agent berlipat. Pembandingan mengabaikan huruf
-    besar dan spasi berlebih; urutan kemunculan pertama dipertahankan.
+    besar dan spasi berlebih; urutan kemunculan pertama dipertahankan. Jawaban agent CV
+    tidak bergantung pada teks pertanyaan, jadi sub-tugas CV dengan agent sama dianggap
+    duplikat walaupun kalimatnya berbeda.
     """
     seen: set[tuple[str, str]] = set()
     unique = []
     for task in tasks:
         question = task.question.strip()
-        key = (task.agent, " ".join(question.lower().split()))
+        text = "" if task.agent in CV_AGENTS else " ".join(question.lower().split())
+        key = (task.agent, text)
         if question and key not in seen:
             seen.add(key)
             unique.append({"agent": task.agent, "question": question})
@@ -234,22 +311,17 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
     if not question:
         return _plan_update("out_of_scope", [], usage)
 
-    messages = [
-        SystemMessage(SUPERVISOR_PLANNER_SYSTEM.format(max_subtasks=MAX_SUBTASKS)),
-        HumanMessage(
-            SUPERVISOR_PLANNER_USER.format(
-                history=format_history(state.get("history", [])), question=question
-            )
-        ),
-    ]
-    planner = runtime.context.llm.with_structured_output(Plan, include_raw=True)
+    profile = runtime.context.profile
+    messages = planner_messages(question, state.get("history", []), profile)
+    schema = Plan if profile is None else CVPlan
+    planner = runtime.context.llm.with_structured_output(schema, include_raw=True)
     try:
         output = planner.invoke(messages)
     except Exception as exc:  # noqa: BLE001 - tipe error provider LLM sangat beragam
         return _fallback(question, usage, f"Planner error: {exc}")
 
     usage.add(output["raw"], step="planner")
-    plan: Plan | None = output["parsed"]
+    plan: Plan | CVPlan | None = output["parsed"]
     if plan is None:
         return _fallback(question, usage, f"Planner output tidak valid: {output['parsing_error']}")
     if plan.response != "answer":
@@ -269,7 +341,10 @@ def dispatch(state: SupervisorState) -> list[Send] | str:
     if state["response"] != "answer":
         return "respond"
     return [
-        Send(AGENT_TO_NODE[task["agent"]], SubTaskInput(index=index, question=task["question"]))
+        Send(
+            AGENT_TO_NODE[task["agent"]],
+            SubTaskInput(index=index, agent=task["agent"], question=task["question"]),
+        )
         for index, task in enumerate(state["subtasks"])
     ]
 
@@ -286,6 +361,15 @@ def run_rag_node(task: SubTaskInput, runtime: Runtime[SupervisorContext]) -> dic
     ctx = runtime.context
     result = run_rag_agent(
         task["question"], llm=ctx.llm, vector_store=ctx.vector_store, db_path=ctx.db_path
+    )
+    return {"collected": [(task["index"], result)]}
+
+
+def run_cv_node(task: SubTaskInput, runtime: Runtime[SupervisorContext]) -> dict:
+    """Node agent CV untuk satu sub-tugas ``cv_match`` atau ``cv_gap`` (tanpa LLM)."""
+    ctx = runtime.context
+    result = run_cv_agent(
+        task["question"], kind=task["agent"], profile=ctx.profile, matches=ctx.matches
     )
     return {"collected": [(task["index"], result)]}
 
@@ -389,6 +473,51 @@ def _with_totals(
     )
 
 
+def planner_messages(
+    question: str, history: Sequence[Mapping[str, str]], profile: CVProfile | None
+) -> list[SystemMessage | HumanMessage]:
+    """Pesan untuk planner. Tanpa profil, slot CV di prompt sistem diisi string kosong.
+
+    Dengan profil, prompt sistem mendapat agent ``cv_match``/``cv_gap`` beserta aturannya, dan
+    pesan pengguna diawali profil ringkas di tag ``<profil>``.
+    """
+    history_text = format_history(history)
+    if profile is None:
+        system = SUPERVISOR_PLANNER_SYSTEM.format(
+            max_subtasks=MAX_SUBTASKS, cv_agents="", cv_rules=""
+        )
+        user = SUPERVISOR_PLANNER_USER.format(history=history_text, question=question)
+    else:
+        system = SUPERVISOR_PLANNER_SYSTEM.format(
+            max_subtasks=MAX_SUBTASKS,
+            cv_agents=SUPERVISOR_PLANNER_CV_AGENTS,
+            cv_rules=SUPERVISOR_PLANNER_CV_RULES,
+        )
+        user = SUPERVISOR_PLANNER_CV_USER.format(
+            profile=format_profile(profile), history=history_text, question=question
+        )
+    return [SystemMessage(system), HumanMessage(user)]
+
+
+def format_profile(profile: CVProfile) -> str:
+    """Profil ringkas untuk planner: posisi tujuan, pengalaman, pendidikan, skill.
+
+    Planner hanya butuh bahan untuk menulis pertanyaan mandiri ("lowongan <posisi> di <kota>"),
+    jadi nama, kontak, lokasi, perusahaan, dan riwayat kerja tidak dikirim. Skill dibatasi
+    ``MAX_PROFILE_SKILLS`` dengan urutan profil. Baris yang kosong dilewati, sama dengan
+    ``cv.plan.plan_prompt_input``.
+    """
+    education = " ".join(p for p in (profile.education_level, profile.education_major) if p)
+    skills = profile.skills[:MAX_PROFILE_SKILLS]
+    lines = [
+        f"Posisi tujuan: {profile.target_role}" if profile.target_role else "",
+        f"Pengalaman: {profile.experience_label}",
+        f"Pendidikan: {education}" if education else "",
+        f"Skill: {', '.join(skills)}" if skills else "",
+    ]
+    return "\n".join(line for line in lines if line)
+
+
 def _compact_assistant(content: str) -> str:
     """Ringkas jawaban asisten untuk riwayat: baris pembuka + identitas setiap lowongan.
 
@@ -438,13 +567,17 @@ def build_supervisor_graph() -> CompiledStateGraph:
     graph.add_node("planner", plan_question)
     graph.add_node("sql_agent", run_sql_node)
     graph.add_node("rag_agent", run_rag_node)
+    graph.add_node("cv_agent", run_cv_node)
     graph.add_node("synthesize", synthesize)
     graph.add_node("respond", respond)
 
     graph.add_edge(START, "planner")
-    graph.add_conditional_edges("planner", dispatch, ["sql_agent", "rag_agent", "respond"])
+    graph.add_conditional_edges(
+        "planner", dispatch, ["sql_agent", "rag_agent", "cv_agent", "respond"]
+    )
     graph.add_edge("sql_agent", "synthesize")
     graph.add_edge("rag_agent", "synthesize")
+    graph.add_edge("cv_agent", "synthesize")
     graph.add_edge("synthesize", END)
     graph.add_edge("respond", END)
     return graph.compile(name="career_assistant_supervisor")
