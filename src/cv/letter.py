@@ -30,6 +30,9 @@ LetterLanguage = Literal["id", "en"]
 LANGUAGE_NAMES: dict[str, str] = {"id": "Bahasa Indonesia", "en": "English"}
 LETTER_LENGTHS = (150, 250, 350)
 NAME_PLACEHOLDER = "[Nama Anda]"
+# Target kata per paragraf, bukan hanya total: dengan "total sekitar N kata" saja, 15 surat
+# (make sample-letter) rata-rata 24% lebih pendek dari target dan paling jauh 40%.
+LETTER_PARAGRAPHS = 4
 # 16 dari 473 deskripsi lebih panjang dari ini (terpanjang 9.407 karakter). Bagian awal
 # deskripsi sudah memuat posisi, tanggung jawab, dan kualifikasi.
 MAX_JOB_CHARS = 4000
@@ -55,7 +58,7 @@ class CoverLetter(BaseModel):
     """Skema structured output. Satu field wajib tanpa default (mode strict)."""
 
     paragraphs: list[str] = Field(
-        description="3-4 paragraf isi surat, tanpa salam pembuka, salam penutup, atau nama."
+        description="Paragraf isi surat, tanpa salam pembuka, salam penutup, atau nama."
     )
 
 
@@ -133,6 +136,8 @@ def generate_cover_letter(
                 profile=profile_text,
                 job=job_text,
                 language=LANGUAGE_NAMES[settings.language],
+                paragraphs=LETTER_PARAGRAPHS,
+                paragraph_words=settings.words // LETTER_PARAGRAPHS,
                 words=settings.words,
             )
         ),

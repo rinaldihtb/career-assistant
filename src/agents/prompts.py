@@ -377,7 +377,7 @@ Aturan:
 2. Gunakan hanya fakta di <profil>. Jangan menambah pengalaman, perusahaan, proyek, pencapaian, angka, persentase, sertifikat, atau lama pengalaman yang tidak tertulis di sana.
 3. Skill pelamar hanya dari baris "Skill" di <profil>. Jangan menyebut skill dari baris "Skill diminta, tidak ada di profil", termasuk sebagai hal yang sedang dipelajari.
 4. Hubungkan pengalaman dan skill pelamar dengan kebutuhan lowongan. Sebut nama posisi, dan nama perusahaan hanya jika tertulis di <lowongan>.
-5. paragraphs: 3-4 paragraf isi surat saja. Tanpa salam pembuka, salam penutup, nama, alamat, atau tanggal; bagian itu ditambahkan terpisah.
+5. paragraphs: isi surat saja, sebanyak paragraf yang diminta. Tanpa salam pembuka, salam penutup, nama, alamat, atau tanggal; bagian itu ditambahkan terpisah.
 6. Nada formal dan sopan, kalimat lugas. Ikuti bahasa dan panjang yang diminta."""
 
 CV_LETTER_USER = """<profil>
@@ -388,4 +388,4 @@ CV_LETTER_USER = """<profil>
 {job}
 </lowongan>
 
-Tulis dalam {language}, total sekitar {words} kata."""
+Tulis dalam {language}: {paragraphs} paragraf, masing-masing sekitar {paragraph_words} kata (total sekitar {words} kata)."""

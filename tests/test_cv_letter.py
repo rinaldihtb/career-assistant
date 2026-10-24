@@ -113,7 +113,10 @@ def test_prompt_has_profile_and_job_but_no_name_location_or_total_experience():
     assert "- Asisten Lab\n" in user.content
     assert "Perusahaan: PT Contoh Jaya" in user.content
     assert "Skill diminta, tidak ada di profil: Power BI, Python" in user.content
-    assert user.content.endswith("Tulis dalam Bahasa Indonesia, total sekitar 250 kata.")
+    assert user.content.endswith(
+        "Tulis dalam Bahasa Indonesia: 4 paragraf, masing-masing sekitar 62 kata "
+        "(total sekitar 250 kata)."
+    )
     for private in ("NADIA", "Nadia", "Malang", "1-3 tahun"):
         assert private not in user.content
 
@@ -125,7 +128,9 @@ def test_settings_choose_language_and_length():
         PROFILE, MATCH, DESCRIPTION, llm=llm, settings=LetterSettings(language="en", words=150)
     )
 
-    assert llm.received[0][1].content.endswith("Tulis dalam English, total sekitar 150 kata.")
+    assert llm.received[0][1].content.endswith(
+        "Tulis dalam English: 4 paragraf, masing-masing sekitar 37 kata (total sekitar 150 kata)."
+    )
 
 
 def test_prompt_input_cleans_description_and_skips_empty_fields():

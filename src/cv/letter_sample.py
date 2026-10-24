@@ -9,7 +9,8 @@ Tanpa ARGS: 5 CV fiktif di tests/eval/cv/. Per CV: ``ingest_cv`` (1 LLM) + ``mat
 
 Yang dicetak hanya angka, nama file, ID, dan judul lowongan; teks CV, nama, skill, dan isi surat
 tidak dicetak, dan tidak ada yang ditulis ke disk. Metrik per surat:
-- ``skill_dikarang``: skill kosakata di surat yang tidak ada di profil (aturan 3 prompt).
+- ``skill_dikarang``: skill kosakata di surat yang tidak ada di profil (aturan 3 prompt);
+  ``dari_lowongan``: bagian darinya yang disebut lowongan (skill kurang yang diklaim).
 - ``angka_dikarang``: angka di surat yang tidak ada di input prompt (aturan 2).
 - ``salam_ganda``: paragraf isi yang memuat salam pembuka atau penutup (aturan 5); salam
   ditambahkan Python, jadi versi LLM akan tampil dua kali.
@@ -63,7 +64,15 @@ def main(paths: list[str]) -> int:
     from config.database import VECTOR_DB  # import di sini: test tidak butuh koneksi Qdrant
     from config.llm import EMBEDDING, LLM_MODEL
 
-    totals = {"surat": 0, "gagal": 0, "skill": 0, "angka": 0, "salam": 0, "anonim": 0}
+    totals = {
+        "surat": 0,
+        "gagal": 0,
+        "skill": 0,
+        "dari_lowongan": 0,
+        "angka": 0,
+        "salam": 0,
+        "anonim": 0,
+    }
     deviations: list[float] = []
     for path in files:
         ingest = ingest_cv(path.read_bytes(), llm=LLM_MODEL)
@@ -83,6 +92,7 @@ def main(paths: list[str]) -> int:
         description = jobs[0].get("job_description") if jobs else None
         prompt_text = "\n".join(letter_prompt_input(ingest.profile, match, description))
         profile_vocab = build_cv_skills(ingest.profile.skills).vocab
+        job_vocab = vocab_in_text(description) | set(match.missing_skills)
         titles = {exp.title.casefold() for exp in ingest.profile.experiences if exp.title}
 
         for settings in SETTINGS:
@@ -104,6 +114,7 @@ def main(paths: list[str]) -> int:
             words = len(body.split())
             deviation = (words - settings.words) / settings.words
             invented_skills = vocab_in_text(body) - profile_vocab
+            from_job = len(invented_skills & job_vocab)
             invented_numbers = set(_NUMBER.findall(body)) - set(_NUMBER.findall(prompt_text))
             double_greeting = sum(
                 1 for p in paragraphs if _GREETING.search(p) or _CLOSING.search(p)
@@ -114,13 +125,15 @@ def main(paths: list[str]) -> int:
 
             totals["surat"] += 1
             totals["skill"] += len(invented_skills)
+            totals["dari_lowongan"] += from_job
             totals["angka"] += len(invented_numbers)
             totals["salam"] += double_greeting
             totals["anonim"] += anonymous
             deviations.append(deviation)
             print(
                 f"{label}: kata={words} ({deviation:+.0%}) paragraf={len(paragraphs)} "
-                f"skill_dikarang={len(invented_skills)} angka_dikarang={len(invented_numbers)} "
+                f"skill_dikarang={len(invented_skills)} dari_lowongan={from_job} "
+                f"angka_dikarang={len(invented_numbers)} "
                 f"salam_ganda={double_greeting} anonim={anonymous} perusahaan={company_cell} "
                 f"jabatan_disebut={sum(1 for t in titles if t in folded)}/{len(titles)} "
                 f"skill_profil_disebut={len(vocab_in_text(body) & profile_vocab)} "
@@ -132,6 +145,7 @@ def main(paths: list[str]) -> int:
     worst = max((abs(d) for d in deviations), default=0.0)
     print(
         f"\nTOTAL surat={totals['surat']} skill_dikarang={totals['skill']} "
+        f"dari_lowongan={totals['dari_lowongan']} "
         f"angka_dikarang={totals['angka']} salam_ganda={totals['salam']} "
         f"anonim={totals['anonim']} selisih_kata rata-rata={mean:.0%} maks={worst:.0%} "
         f"gagal={totals['gagal']}"
