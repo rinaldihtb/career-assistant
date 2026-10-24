@@ -20,6 +20,7 @@ def render_navigation() -> None:
         st.page_link("pages/home.page.py", label="Beranda")
         st.page_link("pages/jobsearch.page.py", label="Cari Lowongan")
         st.page_link(CV_PAGE, label="Cocokkan CV")
+        st.page_link("pages/skillgap.page.py", label="Skill Gap")
         st.page_link("pages/assistant.page.py", label="Asisten Karier")
         st.divider()
         # Status saja, bukan link kedua: link "Cocokkan CV" di atas sudah ke halaman yang sama,

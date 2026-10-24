@@ -75,3 +75,8 @@ sample-match:
 
 eval-cv:
 	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_cv_eval $(ARGS)
+
+.PHONY: sample-plan
+
+sample-plan:
+	PYTHONPATH=.:src $(PYTHON) -m cv.plan_sample $(ARGS)

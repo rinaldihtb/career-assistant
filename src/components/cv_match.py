@@ -159,13 +159,13 @@ def _render_profile_panel(state: dict[str, Any]) -> None:
     """02b kiri: kartu file, form koreksi profil, dan "Cocokkan ulang"."""
     profile: CVProfile = state["profile"]
     version = state["version"]
-    with st.container(border=True):
-        name_column, button_column = st.columns([4, 1], vertical_alignment="center")
-        name_column.markdown(f"**{escape_markdown(state['file_name'])}**")
-        name_column.caption(
-            f"{size_label(state['file_size'])} · {state['pages']} halaman · terbaca"
-        )
-        button_column.button("Ganti", on_click=reset_cv, key="cv_replace")
+    # Baris horizontal, bukan st.columns: tombol selebar isinya. Dengan kolom [4, 1] tombol
+    # "Ganti" terpotong menjadi "G..." di layar laptop 1000 px (panel kiri hanya 2/5 lebar).
+    with st.container(border=True, horizontal=True, vertical_alignment="center"):
+        with st.container():
+            st.markdown(f"**{escape_markdown(state['file_name'])}**")
+            st.caption(f"{size_label(state['file_size'])} · {state['pages']} halaman · terbaca")
+        st.button("Ganti", on_click=reset_cv, key="cv_replace")
 
     # Key memakai version: setelah koreksi diterapkan, widget dibuat ulang dari profil baru.
     with st.form("cv_profile_form"):
@@ -271,10 +271,12 @@ def _render_results(state: dict[str, Any]) -> None:
 def _render_match_card(match: JobMatch, description: str | None) -> None:
     """Kartu: judul, meta, skor, chip skill, detail, dan tombol surat (nonaktif)."""
     with st.container(border=True):
-        info_column, score_column = st.columns([4, 1])
-        info_column.markdown(f"**{escape_markdown(match.job_title)}**")
-        info_column.caption(escape_markdown(match_meta(match)))
-        score_column.markdown(f"### {match.score:.0%}")
+        # Horizontal agar skor selebar isinya; kolom [4, 1] mematahkan "83%" di layar 1000 px.
+        with st.container(horizontal=True):
+            with st.container():
+                st.markdown(f"**{escape_markdown(match.job_title)}**")
+                st.caption(escape_markdown(match_meta(match)))
+            st.markdown(f"### {match.score:.0%}", width="content")
         st.progress(min(1.0, max(0.0, match.score)))
         for line in skill_lines(match):
             st.markdown(line)
