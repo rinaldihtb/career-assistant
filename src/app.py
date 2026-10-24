@@ -33,6 +33,12 @@ skill_gap_page = st.Page(
     icon="📊",
 )
 
+letter_page = st.Page(
+    "pages/letter.page.py",
+    title="Surat Lamaran",
+    icon="✉️",
+)
+
 assistant_page = st.Page(
     "pages/assistant.page.py",
     title="Asisten Karier",
@@ -40,7 +46,7 @@ assistant_page = st.Page(
 )
 
 navigation = st.navigation(
-    [home_page, job_search_page, cv_match_page, skill_gap_page, assistant_page],
+    [home_page, job_search_page, cv_match_page, skill_gap_page, letter_page, assistant_page],
     position="hidden",
 )
 navigation.run()

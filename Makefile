@@ -80,3 +80,8 @@ eval-cv:
 
 sample-plan:
 	PYTHONPATH=.:src $(PYTHON) -m cv.plan_sample $(ARGS)
+
+.PHONY: sample-letter
+
+sample-letter:
+	PYTHONPATH=.:src $(PYTHON) -m cv.letter_sample $(ARGS)

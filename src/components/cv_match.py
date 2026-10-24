@@ -29,6 +29,9 @@ from repositories.job_repository import get_jobs_by_ids
 logger = logging.getLogger(__name__)
 
 PAGE_TITLE = "## Cocokkan CV dengan lowongan"
+CV_PAGE = "pages/cvmatch.page.py"
+LETTER_PAGE = "pages/letter.page.py"
+LETTER_JOB_KEY = "letter_job"  # di dalam st.session_state["cv"]: ID lowongan untuk surat
 UPLOADER_ROUND_KEY = "cv_uploader_round"  # dinaikkan saat "Ganti" agar uploader kosong lagi
 CONSENT_KEY = "cv_consent"
 CONSENT_TEXT = (
@@ -267,7 +270,7 @@ def _render_results(state: dict[str, Any]) -> None:
 
 
 def _render_match_card(match: JobMatch, description: str | None) -> None:
-    """Kartu: judul, meta, skor, chip skill, detail, dan tombol surat (nonaktif)."""
+    """Kartu: judul, meta, skor, chip skill, detail, dan tombol ke halaman surat lamaran."""
     with st.container(border=True):
         # Horizontal agar skor selebar isinya; kolom [4, 1] mematahkan "83%" di layar 1000 px.
         with st.container(horizontal=True):
@@ -283,12 +286,13 @@ def _render_match_card(match: JobMatch, description: str | None) -> None:
                 st.markdown(description_to_markdown(description))
             else:
                 st.caption("Deskripsi tidak tersedia.")
-        st.button(
+        if st.button(
             "Buat surat lamaran",
             key=f"cv_letter_{match.job_id}",
-            disabled=True,
-            help="Segera hadir: surat lamaran dari profil CV dan lowongan ini.",
-        )
+            help="Surat lamaran untuk lowongan ini dari profil CV (1 panggilan LLM).",
+        ):
+            st.session_state[CV_STATE_KEY][LETTER_JOB_KEY] = match.job_id
+            st.switch_page(LETTER_PAGE)
 
 
 # --- Dependency dan data -------------------------------------------------------

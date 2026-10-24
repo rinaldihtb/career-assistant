@@ -7,3 +7,4 @@ python-dotenv
 langchain_qdrant
 langgraph
 pypdf>=6.21,<7
+python-docx>=1.2,<2

@@ -1,4 +1,4 @@
-"""Streamlit page: Skill Gap (skill yang paling sering diminta lowongan teratas + rencana belajar)."""
+"""Halaman Streamlit: Skill Gap (skill paling sering diminta lowongan teratas + rencana belajar)."""
 
 from components.navigation import render_navigation
 from components.skill_gap import render_skill_gap_page
