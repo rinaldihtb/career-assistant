@@ -368,13 +368,15 @@ SUPERVISOR_FAILED_MESSAGE = (
 # planner menyimpan ID-nya tanpa aturan baru.
 CV_SOURCE_WITH_LABEL = "Dari profilmu ({label})"
 CV_SOURCE = "Dari profilmu"
+# Rujukan ke daftar lengkap ada di kalimat pembuka, bukan di baris terakhir: UI memindahkan
+# semua baris tanpa [ID:x] ke atas kartu, sehingga baris penutup akan tampil menempel pada pembuka.
 CV_MATCH_INTRO = (
-    "{source}, ini {count} lowongan teratas hasil Cocokkan CV. Skor = {semantic} kemiripan "
-    "profil dengan deskripsi lowongan + {skill} porsi skill yang cocok:"
+    "{source}, ini {count} teratas dari {total} lowongan hasil Cocokkan CV (daftar lengkap ada "
+    "di halaman Cocokkan CV). Skor = {semantic} kemiripan profil dengan deskripsi lowongan + "
+    "{skill} porsi skill yang cocok:"
 )
 CV_MATCH_LINE = "- [ID:{id}] {title} - {company} ({location}): {score} cocok{skills}"
 CV_MATCH_SKILLS = " · skill cocok: {skills}"
-CV_MATCH_MORE = "Daftar {total} lowongan lengkap ada di halaman Cocokkan CV."
 CV_GAP_INTRO = (
     "Dari {jobs} lowongan yang paling cocok dengan CV-mu, skill yang paling sering diminta "
     "dan belum ada di CV:"

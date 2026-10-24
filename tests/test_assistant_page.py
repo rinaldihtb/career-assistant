@@ -1,7 +1,7 @@
 """Halaman Asisten Karier dengan Streamlit AppTest (tanpa browser dan tanpa API key).
 
 ``run_supervisor`` diganti fungsi palsu: yang dites di sini adalah UI, yaitu
-riwayat chat, kartu lowongan, tabel SQL, dan penanganan error. Logika agent
+riwayat chat, kartu lowongan, tabel SQL, banner CV, dan penanganan error. Logika agent
 sudah dites di file test masing-masing.
 """
 
@@ -12,13 +12,20 @@ from streamlit.testing.v1 import AppTest
 
 from components import assistant_chat
 from components.assistant_chat import (
+    CV_EXAMPLE_QUESTIONS,
     DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
+    NO_CV_BANNER,
     AssistantDependencies,
+    cv_banner,
     prepare_display,
     split_rag_answer,
 )
+from components.cv_match import PAGE_TITLE as CV_PAGE_TITLE
+from cv.ingest import CV_STATE_KEY
+from cv.match import JobMatch, MatchResult
+from cv.profile import CVProfile
 from models.agent import AgentResult, LLMCall, LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
@@ -81,17 +88,23 @@ def calls(monkeypatch):
     return recorded
 
 
-def _app() -> AppTest:
+def _app(cv_state: dict | None = None) -> AppTest:
     app = AppTest.from_function(_page, default_timeout=10)
+    if cv_state is not None:
+        app.session_state[CV_STATE_KEY] = cv_state
     app.run()
     return app
+
+
+def _examples(app: AppTest) -> list[str]:
+    return [button.label for button in app.button if button.key.startswith("assistant_example_")]
 
 
 def test_empty_chat_shows_example_questions(calls):
     app = _app()
 
     assert not app.exception
-    assert [button.label for button in app.button] == list(EXAMPLE_QUESTIONS)
+    assert _examples(app) == list(EXAMPLE_QUESTIONS)
     assert len(app.chat_message) == 0
     assert calls == []
 
@@ -113,6 +126,7 @@ def test_rag_answer_shows_uniform_card_with_reason(calls):
     ) in [caption.value for caption in app.caption]
     assert calls[0]["history"] == []
     assert calls[0]["db_path"] == "db.sqlite"
+    assert calls[0]["profile"] is None and calls[0]["matches"] is None
 
 
 def test_llm_usage_detail_per_call(calls):
@@ -177,7 +191,7 @@ def test_history_survives_rerun(calls):
 
 def test_example_button_asks_question(calls):
     app = _app()
-    app.button[0].click().run()
+    app.button(key="assistant_example_0").click().run()
 
     assert calls[0]["question"] == EXAMPLE_QUESTIONS[0]
     assert len(app.chat_message) == 2
@@ -186,7 +200,7 @@ def test_example_button_asks_question(calls):
 def test_new_conversation_clears_history(calls):
     app = _app()
     app.chat_input[0].set_value("Lowongan data analyst di Jakarta").run()
-    app.button[0].click().run()  # "Mulai percakapan baru"
+    app.button(key="assistant_clear").click().run()
 
     assert app.session_state[MESSAGES_KEY] == []
     assert len(app.chat_message) == 0
@@ -336,3 +350,96 @@ def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
     usage_panels = [e.label for e in app.expander if e.label.startswith("Detail:")]
     assert len(usage_panels) == 1
     assert usage_panels[0].startswith("Detail: Gabungan beberapa agent | 4 panggilan LLM")
+
+
+# --- CV aktif dari Cocokkan CV --------------------------------------------------
+
+PROFILE = CVProfile(
+    full_name="Nadia Putri",
+    target_role="Data Analyst",
+    skills=["SQL", "Excel", "Python", "Power BI", "Tableau", "dbt"],
+    experience_months=14,
+)
+MATCHES = MatchResult(
+    matches=[
+        JobMatch(job_id=1, job_title="Data Analyst", score=0.82, semantic=0.6, semantic_scaled=0.6)
+    ],
+    embedding_calls=1,
+)
+CV_STATE = {"profile": PROFILE, "matches": MATCHES, "version": 1, "file_name": "cv_nadia.pdf"}
+CV_RESULT = AgentResult(
+    answer=(
+        "Dari profilmu (Data Analyst · 1-3 tahun), ini 1 lowongan teratas hasil Cocokkan CV:\n"
+        "- [ID:1] Data Analyst - PT Alpha (Jakarta Selatan, Jakarta Raya): 82% cocok · "
+        "skill cocok: SQL"
+    ),
+    source="cv",
+    job_ids=[1],
+    usage=LLMUsage(llm_calls=1, total_tokens=3450),
+)
+
+
+def test_without_cv_banner_points_to_cv_page(calls):
+    app = _app()
+
+    assert app.info[0].value == NO_CV_BANNER
+    assert app.button(key="assistant_to_cv").label == "Upload CV"
+    assert app.success == []
+
+
+def test_with_cv_banner_shows_profile_and_cv_examples(calls):
+    app = _app(CV_STATE)
+
+    assert not app.exception
+    assert app.success[0].value == cv_banner(CV_STATE)
+    assert app.button(key="assistant_to_cv").label == "Koreksi profil"
+    assert _examples(app) == list(CV_EXAMPLE_QUESTIONS)
+    assert app.info == []
+
+
+def test_cv_banner_text_has_no_name():
+    text = cv_banner(CV_STATE)
+
+    assert text.startswith(
+        "CV aktif: cv\\_nadia.pdf · Data Analyst · 1-3 tahun · SQL, Excel, Python, Power BI +2."
+    )
+    assert "Nadia" not in text.replace("cv\\_nadia", "")
+    assert cv_banner({**CV_STATE, "profile": CVProfile()}).startswith(
+        "CV aktif: cv\\_nadia.pdf · profil kosong."
+    )
+
+
+def test_question_with_cv_sends_profile_and_matches(calls):
+    app = _app(CV_STATE)
+    app.button(key="assistant_example_0").click().run()
+
+    assert calls[0]["question"] == CV_EXAMPLE_QUESTIONS[0]
+    assert calls[0]["profile"] is PROFILE
+    assert calls[0]["matches"] is MATCHES
+
+
+def test_cv_answer_renders_cards_with_match_note(monkeypatch, jobs_db):
+    deps = AssistantDependencies(llm="llm", vector_store="store", db_path=str(jobs_db))
+    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: deps)
+    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda q, **kwargs: CV_RESULT)
+    app = _app(CV_STATE)
+    app.chat_input[0].set_value("Lowongan yang cocok untukku?").run()
+
+    assert not app.exception
+    texts = [md.value for md in app.markdown]
+    assert any(text.startswith("Dari profilmu (Data Analyst") for text in texts)
+    assert "**Data Analyst**  \nPT Alpha" in texts
+    assert "**Kecocokan:** 82% cocok · skill cocok: SQL" in texts
+    assert app.expander[-1].label.startswith(
+        "Detail: Cocokkan CV (tanpa LLM) | 1 panggilan LLM | 3.450 token"
+    )
+
+
+def test_cv_button_opens_registered_cv_page(calls):
+    app = AppTest.from_file(str(APP_PATH), default_timeout=10)
+    app.run()
+    app.switch_page("pages/assistant.page.py").run()
+    app.button(key="assistant_to_cv").click().run()
+
+    assert not app.exception
+    assert app.markdown[0].value == CV_PAGE_TITLE

@@ -60,8 +60,9 @@ def test_match_lists_top_jobs_in_rag_line_format():
     assert result.usage.llm_calls == 0
     assert result.error is None
     intro = (
-        "Dari profilmu (Data Analyst · 1-3 tahun), ini 2 lowongan teratas hasil Cocokkan CV. "
-        "Skor = 60% kemiripan profil dengan deskripsi lowongan + 40% porsi skill yang cocok:"
+        "Dari profilmu (Data Analyst · 1-3 tahun), ini 2 teratas dari 2 lowongan hasil Cocokkan "
+        "CV (daftar lengkap ada di halaman Cocokkan CV). Skor = 60% kemiripan profil dengan "
+        "deskripsi lowongan + 40% porsi skill yang cocok:"
     )
     first = (
         "- [ID:8] Data Analyst 8 - PT 8 (Jakarta Selatan, Jakarta Raya): 82% cocok · "
@@ -84,17 +85,18 @@ def test_match_lines_are_parsed_by_chat_cards():
 def test_match_shows_limit_and_points_to_full_list():
     jobs = [job(job_id, 0.9 - job_id / 100) for job_id in range(1, 11)]
     result = run_cv_agent("x", kind="cv_match", profile=PROFILE, matches=matches(*jobs))
+    lines = result.answer.splitlines()
 
     assert result.job_ids == list(range(1, CV_MATCH_LIMIT + 1))
-    assert result.answer.splitlines()[-1] == (
-        "Daftar 10 lowongan lengkap ada di halaman Cocokkan CV."
-    )
+    assert "ini 5 teratas dari 10 lowongan hasil Cocokkan CV (daftar lengkap" in lines[0]
+    assert len(lines) == 1 + CV_MATCH_LIMIT
+    assert lines[-1].startswith("- [ID:5]")  # baris terakhir tetap baris lowongan
 
 
 def test_match_without_profile_label():
     result = run_cv_agent("x", kind="cv_match", profile=None, matches=matches(job(1, 0.5)))
 
-    assert result.answer.startswith("Dari profilmu, ini 1 lowongan teratas")
+    assert result.answer.startswith("Dari profilmu, ini 1 teratas dari 1 lowongan")
 
 
 # --- cv_gap ----------------------------------------------------------------------

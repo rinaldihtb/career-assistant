@@ -6,6 +6,10 @@ Cocokkan CV. Skill gap dihitung dari ``matches`` yang sudah ada (``cv.gap``: 0 L
 LLM saat tombol diklik, lalu di-cache di ``st.session_state["cv"]["plan"]`` per ``version``
 profil; "Ganti" CV menghapusnya bersama state CV.
 
+Tombol "Tanya Asisten" hanya membuka Asisten Karier, yang membaca CV yang sama
+dari ``st.session_state``; tidak ada pertanyaan yang dikirim otomatis, jadi 0 LLM sampai
+pengguna bertanya (skill gap yang sama sudah tampil di halaman ini).
+
 Bar memakai ``st.progress`` agar urutan tampil sama persis dengan urutan hitungan. Halaman
 tidak menampilkan estimasi kenaikan skor: menambah 2 skill gap teratas hanya menaikkan skor
 rata-rata top-10 sebesar 1,0-2,5 poin di set eval Cocokkan CV (porsi skill berbobot 40% dan
@@ -28,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 PAGE_TITLE = "## Skill gap & rencana belajar"
 CV_PAGE = "pages/cvmatch.page.py"
+ASSISTANT_PAGE = "pages/assistant.page.py"
 PLAN_STATE_KEY = "plan"  # di dalam st.session_state["cv"]: {"version": int, "result": ...}
 NO_CV = (
     "Belum ada CV aktif. Upload CV di halaman Cocokkan CV dulu; skill gap dihitung dari "
@@ -70,6 +75,10 @@ def render_skill_gap_page() -> None:
         _render_counts("Sudah kamu punya", gap.have, gap.jobs, NO_HAVE)
     with right:
         _render_plan(state, gap)
+        if st.button(
+            "Tanya Asisten", icon=":material/chat:", width="stretch", key="gap_to_assistant"
+        ):
+            st.switch_page(ASSISTANT_PAGE)
 
 
 def _go_to_cv_match(message: str) -> None:

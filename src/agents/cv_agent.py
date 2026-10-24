@@ -24,7 +24,6 @@ from agents.prompts import (
     CV_GAP_PLAN,
     CV_MATCH_INTRO,
     CV_MATCH_LINE,
-    CV_MATCH_MORE,
     CV_MATCH_SKILLS,
     CV_NO_MATCHES_MESSAGE,
     CV_SOURCE,
@@ -86,13 +85,14 @@ def run_cv_agent(
 
 
 def match_answer(profile: CVProfile | None, shown: list[JobMatch], *, total: int) -> str:
-    """Teks jawaban ``cv_match``: pembuka dengan rumus skor, satu baris per lowongan."""
+    """Teks jawaban ``cv_match``: pembuka (jumlah, rumus skor), lalu satu baris per lowongan."""
     weight = MatchConfig().semantic_weight
     label = profile_label(profile)
     lines = [
         CV_MATCH_INTRO.format(
             source=CV_SOURCE_WITH_LABEL.format(label=label) if label else CV_SOURCE,
             count=len(shown),
+            total=total,
             semantic=f"{weight:.0%}",
             skill=f"{1 - weight:.0%}",
         )
@@ -109,8 +109,6 @@ def match_answer(profile: CVProfile | None, shown: list[JobMatch], *, total: int
                 skills=CV_MATCH_SKILLS.format(skills=", ".join(skills)) if skills else "",
             )
         )
-    if total > len(shown):
-        lines.append(CV_MATCH_MORE.format(total=total))
     return "\n".join(lines)
 
 

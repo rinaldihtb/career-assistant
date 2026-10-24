@@ -1,10 +1,15 @@
 """Halaman Asisten Karier: chat yang memanggil supervisor agent.
 
 Komponen ini hanya mengurus tampilan dan riwayat chat. Pemilihan dan
-penggabungan agent (SQL, RAG, atau pesan umum) sepenuhnya dikerjakan
+penggabungan agent (SQL, RAG, CV, atau pesan umum) sepenuhnya dikerjakan
 ``run_supervisor``; UI tidak memanggil agent lain secara langsung. Jawaban
 gabungan (``source="multi"``) ditampilkan per bagian dengan aturan yang sama
 seperti jawaban satu agent.
+
+CV dibaca dari ``st.session_state["cv"]`` yang diisi halaman Cocokkan CV; halaman ini tidak
+punya upload sendiri. Jika ada, profil dan hasil pencocokan diteruskan ke ``run_supervisor``
+(planner menerima profil ringkas, teks CV tidak pernah dikirim). Banner di atas chat
+menunjukkan apakah CV dipakai dan menautkan ke Cocokkan CV.
 """
 
 import logging
@@ -19,6 +24,7 @@ import streamlit as st
 from agents.rag_agent import format_salary
 from agents.supervisor_agent import run_supervisor
 from components.job_description import description_to_markdown, escape_markdown
+from cv.ingest import CV_STATE_KEY
 from models.agent import AgentResult
 from repositories.job_repository import get_jobs_by_ids
 
@@ -27,11 +33,28 @@ logger = logging.getLogger(__name__)
 # Prefix "assistant_" agar tidak bentrok dengan key session_state halaman lain.
 MESSAGES_KEY = "assistant_messages"
 PENDING_KEY = "assistant_pending_question"
+CV_PAGE = "pages/cvmatch.page.py"
 EXAMPLE_QUESTIONS = (
     "Lowongan data analyst di Jakarta",
     "Berapa rata-rata gaji lowongan di Surabaya?",
     "Saya lulusan akuntansi, lowongan apa yang cocok?",
 )
+# Satu contoh per jenis jawaban saat CV aktif: agent CV (lowongan, skill), lalu SQL dengan
+# posisi tujuan dari profil.
+CV_EXAMPLE_QUESTIONS = (
+    "Lowongan mana yang paling cocok dengan CV-ku?",
+    "Skill apa yang perlu kupelajari dulu?",
+    "Berapa rata-rata gaji untuk posisi yang kutuju?",
+)
+NO_CV_BANNER = (
+    "Belum ada CV, jadi jawaban hanya dari data lowongan. Upload CV di Cocokkan CV agar "
+    'Asisten bisa menjawab "lowongan yang cocok untukku" dan "skill apa yang kurang".'
+)
+CV_BANNER = (
+    "CV aktif: {file_name} · {summary}. Profil ringkas (posisi tujuan, pengalaman, "
+    "pendidikan, skill) dipakai untuk menjawab; teks CV tidak dikirim."
+)
+BANNER_SKILLS = 4
 DEPENDENCY_ERROR = (
     "Asisten belum bisa dijalankan karena konfigurasi LLM atau Qdrant belum lengkap. "
     "Periksa file .env."
@@ -41,6 +64,7 @@ SOURCE_LABELS = {
     "sql": "Statistik data (SQL)",
     "general": "Pesan umum",
     "multi": "Gabungan beberapa agent",
+    "cv": "Cocokkan CV (tanpa LLM)",
 }
 STEP_LABELS = {
     "planner": "Planner: pecah pertanyaan",
@@ -50,7 +74,7 @@ STEP_LABELS = {
     "rag_answer": "RAG: jawab dari kandidat",
 }
 # Label catatan di kartu: alasan relevansi (RAG) atau fakta dari query (SQL, misalnya gaji).
-NOTE_LABELS = {"rag": "Kenapa cocok", "sql": "Keterangan"}
+NOTE_LABELS = {"rag": "Kenapa cocok", "sql": "Keterangan", "cv": "Kecocokan"}
 # SQL bisa mengembalikan sampai 50 baris; kartu dibatasi agar halaman tetap ringkas.
 MAX_CARDS = 10
 
@@ -112,30 +136,40 @@ def render_assistant_page() -> None:
         st.caption(f"Detail: {exc!r}")
         return
 
+    cv: dict[str, Any] | None = st.session_state.get(CV_STATE_KEY)
+    _render_cv_banner(cv)
+
     messages: list[dict[str, Any]] = st.session_state.setdefault(MESSAGES_KEY, [])
     for message in messages:
         _render_message(message)
 
     question = st.chat_input("Tanya tentang lowongan...") or st.session_state.pop(PENDING_KEY, None)
     if question:
-        _answer(question, deps, messages)
+        _answer(question, deps, messages, cv)
     elif not messages:
-        _render_examples()
+        _render_examples(CV_EXAMPLE_QUESTIONS if cv else EXAMPLE_QUESTIONS)
 
     # Dirender terakhir agar langsung muncul setelah jawaban pertama.
     if messages:
-        st.button("Mulai percakapan baru", on_click=_clear_messages)
+        st.button("Mulai percakapan baru", on_click=_clear_messages, key="assistant_clear")
 
 
 # --- Alur tanya-jawab --------------------------------------------------------
 
 
-def _answer(question: str, deps: AssistantDependencies, messages: list[dict[str, Any]]) -> None:
+def _answer(
+    question: str,
+    deps: AssistantDependencies,
+    messages: list[dict[str, Any]],
+    cv: dict[str, Any] | None,
+) -> None:
     """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
 
     ``history`` diambil sebelum pertanyaan baru ditambahkan, sesuai kontrak
     ``run_supervisor`` (riwayat tanpa pertanyaan saat ini). ``AgentResult``
     dan durasi ikut disimpan agar kartu dan detail LLM tetap tampil saat rerun.
+    Profil dan hasil pencocokan CV aktif (jika ada) dibaca pada saat bertanya, jadi
+    koreksi profil di Cocokkan CV langsung berlaku untuk pertanyaan berikutnya.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
     user_message = {"role": "user", "content": question}
@@ -151,6 +185,8 @@ def _answer(question: str, deps: AssistantDependencies, messages: list[dict[str,
                 vector_store=deps.vector_store,
                 db_path=deps.db_path,
                 history=history,
+                profile=cv["profile"] if cv else None,
+                matches=cv["matches"] if cv else None,
             )
             seconds = time.perf_counter() - start
             display = prepare_display(result, deps.db_path)
@@ -181,11 +217,33 @@ def _clear_messages() -> None:
 # --- Tampilan ----------------------------------------------------------------
 
 
-def _render_examples() -> None:
-    """Tombol contoh pertanyaan saat riwayat masih kosong."""
+def _render_cv_banner(cv: dict[str, Any] | None) -> None:
+    """Status CV di atas chat dan tombol ke Cocokkan CV (0 LLM).
+
+    ``st.switch_page`` dipanggil saat tombol diklik, bukan ``st.page_link``, supaya alurnya
+    sama dengan tombol halaman lain dan bisa dites dengan AppTest.
+    """
+    with st.container(horizontal=True, vertical_alignment="center", wrap=False):
+        if cv:
+            st.success(cv_banner(cv))
+            clicked = st.button("Koreksi profil", key="assistant_to_cv")
+        else:
+            st.info(NO_CV_BANNER)
+            clicked = st.button("Upload CV", key="assistant_to_cv")
+    if clicked:
+        st.switch_page(CV_PAGE)
+
+
+def _render_examples(questions: tuple[str, ...]) -> None:
+    """Tombol contoh pertanyaan saat riwayat masih kosong.
+
+    Lebar tombol mengikuti teks dan baris boleh turun, karena di kolom berlebar tetap teks
+    contoh terpotong pada lebar 1000 px.
+    """
     st.markdown("**Contoh pertanyaan:**")
-    for column, question in zip(st.columns(len(EXAMPLE_QUESTIONS)), EXAMPLE_QUESTIONS):
-        column.button(question, on_click=_ask, args=(question,), width="stretch")
+    with st.container(horizontal=True):
+        for index, question in enumerate(questions):
+            st.button(question, on_click=_ask, args=(question,), key=f"assistant_example_{index}")
 
 
 def _render_message(message: dict[str, Any]) -> None:
@@ -289,15 +347,30 @@ def _render_llm_usage(result: AgentResult, seconds: float | None) -> None:
 # --- Helper tanpa Streamlit (bisa dites langsung) ----------------------------
 
 
+def cv_banner(cv: dict[str, Any]) -> str:
+    """Teks banner CV aktif: nama file, posisi tujuan, pengalaman, dan beberapa skill."""
+    profile = cv["profile"]
+    parts = [escape_markdown(profile.target_role)] if profile.target_role else []
+    if profile.experience_months is not None:
+        parts.append(profile.experience_label)
+    skills = [escape_markdown(skill) for skill in profile.skills[:BANNER_SKILLS]]
+    if skills:
+        more = len(profile.skills) - BANNER_SKILLS
+        parts.append(", ".join(skills) + (f" +{more}" if more > 0 else ""))
+    return CV_BANNER.format(
+        file_name=escape_markdown(cv["file_name"]), summary=" · ".join(parts) or "profil kosong"
+    )
+
+
 def prepare_display(result: AgentResult, db_path: str) -> Display:
     """Tentukan teks dan kartu untuk satu jawaban.
 
     - RAG: kartu = ``result.rows`` (lowongan yang dikutip), catatan = alasan per ID
       dari jawaban. Jika ada lowongan yang barisnya tidak sesuai format, teks
       jawaban ditampilkan utuh dan kartu tanpa catatan.
-    - SQL: jika jawaban memuat baris ``- [ID:x] ...``, detail lowongannya diambil
+    - SQL dan CV: jika jawaban memuat baris ``- [ID:x] ...``, detail lowongannya diambil
       dari SQLite agar kartunya sama dengan RAG. Jika tidak (misalnya jawaban
-      jumlah atau rata-rata), hanya teks dan tabel.
+      jumlah, rata-rata, atau skill gap), hanya teks dan tabel.
     - Gabungan (``parts`` terisi): aturan di atas diterapkan per bagian.
     - Lainnya: hanya teks.
     """

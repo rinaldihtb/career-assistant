@@ -260,3 +260,23 @@ def test_gap_caption_mentions_hidden_skills_and_jobs_without_skills():
 
     bare = job(3, 0.5, [], []).model_copy(update={"skill_portion": None})
     assert "1 lowongan tidak menyebut skill spesifik." in gap_caption(compute_skill_gap([bare]))
+
+
+def test_ask_assistant_button_opens_assistant_without_question(plans, monkeypatch):
+    from components import assistant_chat
+    from components.assistant_chat import AssistantDependencies
+
+    deps = AssistantDependencies(llm="llm", vector_store="store", db_path="db.sqlite")
+    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: deps)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=10)
+    app.run()
+    app.switch_page("pages/skillgap.page.py")
+    app.session_state[CV_STATE_KEY] = state()
+    app.run()
+    app.button(key="gap_to_assistant").click().run()
+
+    assert not app.exception
+    assert app.markdown[0].value == "## Asisten Karier"
+    assert app.success  # banner CV aktif
+    assert app.chat_message == []  # tidak ada pertanyaan yang dikirim otomatis
+    assert plans["calls"] == []
