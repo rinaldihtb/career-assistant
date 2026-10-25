@@ -31,8 +31,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from agents.supervisor_agent import SUPERVISOR_GRAPH, SupervisorContext
-from evaluation.checks import (
+from src.agents.supervisor_agent import SUPERVISOR_GRAPH, SupervisorContext
+from src.evaluation.checks import (
     RunOutput,
     cited_ids,
     extract_run,
@@ -41,8 +41,8 @@ from evaluation.checks import (
     run_checks,
     split_citations,
 )
-from models.agent import AgentResult
-from repositories.job_repository import connect_readonly, get_jobs_by_ids
+from src.models.agent import AgentResult
+from src.repositories.job_repository import connect_readonly, get_jobs_by_ids
 
 CASES_PATH = Path("tests/eval/queries.yaml")
 RESULTS_DIR = Path("tests/eval/results")
@@ -274,8 +274,8 @@ def main() -> None:
         rescore_file(args, started)
         return
     load_dotenv()
-    from config.database import VECTOR_DB  # import di sini: butuh .env
-    from config.llm import LLM_MODEL
+    from src.config.database import VECTOR_DB  # import di sini: butuh .env
+    from src.config.llm import LLM_MODEL
 
     db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
     context = SupervisorContext(llm=LLM_MODEL, vector_store=VECTOR_DB, db_path=db_path)

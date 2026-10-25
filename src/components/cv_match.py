@@ -21,12 +21,12 @@ from typing import Any
 
 import streamlit as st
 
-from components.job_description import description_to_markdown, escape_markdown
-from cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
-from cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
-from cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
-from helpers.format import format_salary
-from repositories.job_repository import get_jobs_by_ids
+from src.components.job_description import description_to_markdown, escape_markdown
+from src.cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
+from src.cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
+from src.cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
+from src.helpers.format import format_salary
+from src.repositories.job_repository import get_jobs_by_ids
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +75,8 @@ def load_dependencies() -> CVDependencies:
     gagal dengan pesan jelas. ``st.cache_resource`` tidak menyimpan exception, jadi setelah
     ``.env`` diperbaiki pemanggilan berikutnya mencoba lagi.
     """
-    from config.database import VECTOR_DB
-    from config.llm import EMBEDDING, LLM_MODEL
+    from src.config.database import VECTOR_DB
+    from src.config.llm import EMBEDDING, LLM_MODEL
 
     return CVDependencies(
         llm=LLM_MODEL,

@@ -16,8 +16,8 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field, PrivateAttr
 
-from agents import supervisor_agent
-from agents.prompts import (
+from src.agents import supervisor_agent
+from src.agents.prompts import (
     RAG_NO_CANDIDATE_MESSAGE,
     SQL_FAILED_MESSAGE,
     SUPERVISOR_CLARIFY_MESSAGE,
@@ -29,7 +29,7 @@ from agents.prompts import (
     SUPERVISOR_SKIPPED_NOTE,
     SUPERVISOR_UNSUPPORTED_MESSAGE,
 )
-from agents.supervisor_agent import (
+from src.agents.supervisor_agent import (
     MAX_HISTORY_CHARS,
     MAX_HISTORY_MESSAGES,
     SUPERVISOR_GRAPH,

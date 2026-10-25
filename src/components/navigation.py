@@ -2,7 +2,7 @@
 
 import streamlit as st
 
-from cv.ingest import CV_STATE_KEY
+from src.cv.ingest import CV_STATE_KEY
 
 CV_PAGE = "pages/cvmatch.page.py"
 

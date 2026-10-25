@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_qdrant import QdrantVectorStore
 
-from agents.rag_agent import (
+from src.agents.rag_agent import (
     allowed_job_ids,
     build_job_id_filter,
     build_place_index,
@@ -19,7 +19,7 @@ from agents.rag_agent import (
     retrieve_jobs,
     split_excluded_places,
 )
-from repositories.job_repository import get_job_locations, get_jobs_by_ids
+from src.repositories.job_repository import get_job_locations, get_jobs_by_ids
 
 # --- job_repository ----------------------------------------------------------
 

@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 from langchain_core.vectorstores import VectorStore
 from qdrant_client import models
 
-from models.jobs import Job, JobLocation
+from src.models.jobs import Job, JobLocation
 
 # Columns exposed to the batch/UI helpers.  Seed timestamps are deliberately
 # omitted because they are not job-posting dates.

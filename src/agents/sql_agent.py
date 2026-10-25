@@ -13,14 +13,14 @@ from langchain_core.tools import StructuredTool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 
-from agents.prompts import (
+from src.agents.prompts import (
     SQL_ANSWER_SYSTEM,
     SQL_GENERATION_SYSTEM,
     SQL_GENERATION_USER,
     SQL_NOT_RELEVANT_TOKEN,
     SQL_RETRY_USER,
 )
-from repositories.job_repository import JobRepository
+from src.repositories.job_repository import JobRepository
 
 DEFAULT_MAX_ROWS = 50
 MAX_SQL_ATTEMPTS = 2

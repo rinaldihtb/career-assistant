@@ -1,13 +1,13 @@
 """Dependency instances used by the application."""
 
-from agents.rag_agent import RagAgent
-from agents.sql_agent import SqlAgent
+from src.agents.rag_agent import RagAgent
+from src.agents.sql_agent import SqlAgent
 
 # from agents.supervisor_agent_normal import SupervisorAgent
-from agents.supervisor_agent_graph import SupervisorAgent
-from config.database import SQL_DB, VECTOR_DB
-from config.llm import LLM_MODEL
-from repositories.job_repository import JobRepository
+from src.agents.supervisor_agent_graph import SupervisorAgent
+from src.config.database import SQL_DB, VECTOR_DB
+from src.config.llm import LLM_MODEL
+from src.repositories.job_repository import JobRepository
 
 job_repository = JobRepository(db=SQL_DB, vector_db=VECTOR_DB)
 

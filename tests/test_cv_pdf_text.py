@@ -11,8 +11,8 @@ import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from cv import pdf_text
-from cv.pdf_text import CVRejectedError, extract_cv_text
+from src.cv import pdf_text
+from src.cv.pdf_text import CVRejectedError, extract_cv_text
 
 CV_PAGE = (
     "Dimas Prakoso - Data Analyst\n"

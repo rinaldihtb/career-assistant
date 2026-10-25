@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from components import cv_match
-from components.cv_match import (
+from src.components import cv_match
+from src.components.cv_match import (
     CONSENT_KEY,
     DEPENDENCY_ERROR,
     EMPTY_RESULTS,
@@ -28,10 +28,10 @@ from components.cv_match import (
     skill_lines,
     usage_caption,
 )
-from cv.ingest import CV_STATE_KEY, IngestResult
-from cv.match import JobMatch, MatchConfig, MatchResult
-from cv.profile import CVProfile, Experience
-from models.agent import LLMUsage
+from src.cv.ingest import CV_STATE_KEY, IngestResult
+from src.cv.match import JobMatch, MatchConfig, MatchResult
+from src.cv.profile import CVProfile, Experience
+from src.models.agent import LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
 CV_PDF = Path("tests/eval/cv/cv01_data_analyst.pdf")
@@ -118,7 +118,7 @@ def calls(monkeypatch, jobs_db):
 
 
 def _page():
-    from components.cv_match import render_cv_match_page
+    from src.components.cv_match import render_cv_match_page
 
     render_cv_match_page()
 

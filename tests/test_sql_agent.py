@@ -4,7 +4,7 @@ import re
 import sqlite3
 from contextlib import closing
 
-from agents.prompts import (
+from src.agents.prompts import (
     SQL_ANSWER_SYSTEM,
     SQL_EMPTY_RESULT_MESSAGE,
     SQL_FAILED_MESSAGE,
@@ -14,7 +14,7 @@ from agents.prompts import (
     SQL_NOT_RELEVANT_TOKEN,
     SQL_TRUNCATED_NOTE,
 )
-from agents.sql_agent import execute_sql, run_sql_agent, strip_invalid_citations, validate_sql
+from src.agents.sql_agent import execute_sql, run_sql_agent, strip_invalid_citations, validate_sql
 
 
 def _sql_block(sql: str) -> str:

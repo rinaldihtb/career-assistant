@@ -2,6 +2,7 @@
 
 import operator
 import re
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, TypedDict, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -11,25 +12,34 @@ from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from pydantic import BaseModel
+from pydantic.fields import PrivateAttr
 
-from agents.prompts import (
+from src.agents.prompts import (
+    SUPERVISOR_CHAT_SYSTEM,
+    SUPERVISOR_CHAT_USER,
     SUPERVISOR_CLARIFY_MESSAGE,
+    SUPERVISOR_CLARIFY_SYSTEM,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_GENERAL_MESSAGE,
+    SUPERVISOR_NO_HISTORY,
     SUPERVISOR_PLANNER_SYSTEM,
+    SUPERVISOR_PLANNER_USER,
     SUPERVISOR_REFUSE_MESSAGE,
     SUPERVISOR_SKIPPED_NOTE,
     SUPERVISOR_UNSUPPORTED_MESSAGE,
 )
-from agents.rag_agent import RetrievalResult
-from agents.sql_agent import SQLQueryResult
-from models.agent import AgentResult, LLMUsage
-from repositories.job_repository import JobRepository
+from src.agents.rag_agent import RetrievalResult
+from src.agents.sql_agent import SQLQueryResult
+from src.models.agent import AgentResult, LLMUsage
+from src.repositories.job_repository import JobRepository
 
 MAX_SUBTASKS = 3
 AgentName = Literal["sql", "rag"]
 Response = Literal["answer", "clarify", "refuse", "out_of_scope", "unsupported"]
 _CITATION = re.compile(r"\[ID:\s*(\d+)\]", re.IGNORECASE)
+_UNSAFE_CHAT = re.compile(r"\[ID:|Rp\s?\d", re.IGNORECASE)
+MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_CHARS = 600
 
 
 class SubTask(BaseModel):
@@ -46,7 +56,7 @@ class Plan(BaseModel):
     subtasks: list[SubTask]
     skipped: list[str]
     declined: list[str]
-    planner_usage: LLMUsage
+    _planner_usage: LLMUsage = PrivateAttr(default_factory=LLMUsage)
 
 
 class SupervisorState(TypedDict, total=False):
@@ -101,6 +111,50 @@ def usage_from_messages(messages: list[BaseMessage], step: str) -> LLMUsage:
     return usage
 
 
+def _chat_context(messages: Sequence[BaseMessage]) -> tuple[str, str, str]:
+    """Pisahkan pertanyaan terakhir dari riwayat untuk prompt percakapan umum."""
+    items = list(messages)[-MAX_HISTORY_MESSAGES:]
+    last_user_index = next(
+        (index for index in range(len(items) - 1, -1, -1) if _message_role(items[index]) == "user"),
+        None,
+    )
+    if last_user_index is None:
+        return "", SUPERVISOR_NO_HISTORY, SUPERVISOR_NO_HISTORY
+
+    question = _message_content(items[last_user_index])
+    history_items = items[:last_user_index]
+    history_lines = [
+        f"{'Pengguna' if _message_role(item) == 'user' else 'Asisten'}: {_message_content(item)}"
+        for item in history_items
+        if _message_content(item)
+    ]
+    questions = [
+        _message_content(item)
+        for item in history_items
+        if _message_role(item) == "user" and _message_content(item)
+    ]
+    history = "\n".join(history_lines) or SUPERVISOR_NO_HISTORY
+    previous_questions = (
+        "\n".join(f"{index}. {item}" for index, item in enumerate(questions, 1))
+        or SUPERVISOR_NO_HISTORY
+    )
+    return question, history, previous_questions
+
+
+def _message_role(message: BaseMessage | Mapping[str, object]) -> Literal["user", "assistant"]:
+    """Normalisasi peran pesan dari objek LangChain atau dict riwayat UI."""
+    if isinstance(message, Mapping):
+        return "user" if message.get("role") in {"user", "human"} else "assistant"
+    return "user" if message.type == "human" else "assistant"
+
+
+def _message_content(message: BaseMessage | Mapping[str, object]) -> str:
+    """Ambil konten pesan, rapikan spasi, dan batasi panjang prompt."""
+    content = message.get("content", "") if isinstance(message, Mapping) else message.content
+    text = " ".join(str(content).split())
+    return f"{text[:MAX_HISTORY_CHARS]}..." if len(text) > MAX_HISTORY_CHARS else text
+
+
 class SupervisorAgent:
     """Planner memilih satu atau beberapa worker, lalu graph menggabungkan jawabannya."""
 
@@ -121,12 +175,19 @@ class SupervisorAgent:
         """Ubah satu pertanyaan menjadi satu atau beberapa sub-tugas worker."""
         messages = [
             SystemMessage(SUPERVISOR_PLANNER_SYSTEM.format(max_subtasks=MAX_SUBTASKS)),
+            HumanMessage(
+                SUPERVISOR_PLANNER_USER.format(
+                    history=self.format_history(state.get("history", [])),
+                    question=state.get("question", "").strip(),
+                )
+            ),
             *state.get("messages", []),
         ]
+        llm_call = self.llm.with_structured_output(Plan, include_raw=True).invoke(messages)
         try:
             output = cast(
                 dict[str, object],
-                self.llm.with_structured_output(Plan, include_raw=True).invoke(messages),
+                llm_call,
             )
         except Exception:  # noqa: BLE001 - provider/parsing error beragam.
             return {
@@ -137,34 +198,38 @@ class SupervisorAgent:
                 "planner_usage": LLMUsage(),
             }
 
-        planner_usage = LLMUsage()
         raw = output.get("raw")
-        if isinstance(raw, AIMessage):
-            planner_usage.add(raw, step="planner")
 
-        plan = output.get("parsed")
-        if not isinstance(plan, Plan):
-            return {
-                "response": "clarify",
-                "subtasks": [],
-                "skipped": [],
-                "declined": [],
-                "planner_usage": planner_usage,
-            }
+        parsed_plan: Plan = cast(Plan, output.get("parsed"))
+        parsed_plan._planner_usage.add(raw, step="planner")
 
         subtasks = [
             {"agent": task.agent, "question": task.question.strip()}
-            for task in plan.subtasks
+            for task in parsed_plan.subtasks
             if task.question.strip()
         ]
-        response: Response = plan.response if subtasks or plan.response != "answer" else "clarify"
+        response: Response = (
+            parsed_plan.response if subtasks or parsed_plan.response != "answer" else "clarify"
+        )
         return {
             "response": response,
             "subtasks": subtasks[:MAX_SUBTASKS],
-            "skipped": plan.skipped,
-            "declined": plan.declined,
-            "planner_usage": planner_usage,
+            "skipped": parsed_plan.skipped,
+            "declined": parsed_plan.declined,
+            "planner_usage": parsed_plan._planner_usage,
         }
+
+    def format_history(self, history: Sequence[Mapping[str, str]]) -> str:
+        """Ubah riwayat chat menjadi teks singkat untuk prompt."""
+        lines = []
+        for message in list(history)[-MAX_HISTORY_MESSAGES:]:
+            role = "Pengguna" if message.get("role") == "user" else "Asisten"
+            content = " ".join(str(message.get("content", "")).split())
+            if len(content) > MAX_HISTORY_CHARS:
+                content = f"{content[:MAX_HISTORY_CHARS]}..."
+            if content:
+                lines.append(f"{role}: {content}")
+        return "\n".join(lines) or SUPERVISOR_NO_HISTORY
 
     def dispatch(self, state: SupervisorState) -> list[Send] | str:
         """Kirim setiap sub-tugas ke worker yang sesuai, atau langsung merespons."""
@@ -292,15 +357,71 @@ class SupervisorAgent:
         }
 
     def respond(self, state: SupervisorState) -> dict[str, AgentResult]:
-        """Kirim respons tetap jika planner tidak membutuhkan worker."""
+        """Kirim respons tetap, atau balasan LLM yang luwes untuk percakapan umum."""
         response: Response = state.get("response", "out_of_scope")
+        usage = state.get("planner_usage", LLMUsage())
+        if response == "out_of_scope":
+            chat_usage = LLMUsage()
+            answer = self._chat_reply(
+                state,
+                chat_usage,
+                system_prompt=SUPERVISOR_CHAT_SYSTEM,
+                fallback=SUPERVISOR_GENERAL_MESSAGE,
+            )
+            usage = usage.merged(chat_usage)
+        elif response == "clarify":
+            chat_usage = LLMUsage()
+            answer = self._chat_reply(
+                state,
+                chat_usage,
+                system_prompt=SUPERVISOR_CLARIFY_SYSTEM,
+                fallback=SUPERVISOR_CLARIFY_MESSAGE,
+            )
+            usage = usage.merged(chat_usage)
+        else:
+            answer = FIXED_RESPONSES[response]
         return {
             "result": AgentResult(
-                answer=FIXED_RESPONSES[response],
+                answer=answer,
                 source="general",
-                usage=state.get("planner_usage", LLMUsage()),
+                usage=usage,
             )
         }
+
+    def _chat_reply(
+        self,
+        state: SupervisorState,
+        usage: LLMUsage,
+        *,
+        system_prompt: str,
+        fallback: str,
+    ) -> str:
+        """Buat balasan LLM dengan riwayat percakapan dan fallback yang aman."""
+        question, history, previous_questions = _chat_context(state.get("messages", []))
+        if not question:
+            return fallback
+
+        try:
+            response = self.llm.invoke(
+                [
+                    SystemMessage(system_prompt),
+                    HumanMessage(
+                        SUPERVISOR_CHAT_USER.format(
+                            previous_questions=previous_questions,
+                            history=history,
+                            question=question,
+                        )
+                    ),
+                ]
+            )
+        except Exception:  # noqa: BLE001 - error provider beragam.
+            return fallback
+
+        usage.add(response, step="chat")
+        answer = str(getattr(response, "text", response.content)).strip()
+        if not answer or _UNSAFE_CHAT.search(answer):
+            return fallback
+        return answer
 
     def create_supervisor_agent(self) -> CompiledStateGraph:
         """Bangun workflow supervisor.
@@ -330,3 +451,12 @@ class SupervisorAgent:
         graph.add_edge("synthesize", END)
         graph.add_edge("respond", END)
         return graph.compile()
+
+
+if __name__ == "__main__":
+    from src.containers import supervisor_agent
+
+    state = supervisor_agent.graph.invoke(
+        {"messages": [HumanMessage(content="Lowongan data analyst jakarta?")]}
+    )
+    print(state["result"].answer)

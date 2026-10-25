@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
-from cv.profile import (
+from src.cv.profile import (
     MAX_SKILLS,
     CVProfile,
     Experience,

@@ -47,8 +47,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from agents.rag_agent import MIN_CHUNK_CHARS
-from cv.match import (
+from src.agents.rag_agent import MIN_CHUNK_CHARS
+from src.cv.match import (
     JobSkillIndex,
     MatchConfig,
     aggregate_job_scores,
@@ -58,10 +58,10 @@ from cv.match import (
     scale_semantic,
     skill_score,
 )
-from cv.pdf_text import CVRejectedError, extract_cv_text
-from cv.profile import CVProfile, extract_cv_profile
-from cv.skills import CVSkills, build_cv_skills, match_skills
-from repositories.job_repository import connect_readonly
+from src.cv.pdf_text import CVRejectedError, extract_cv_text
+from src.cv.profile import CVProfile, extract_cv_profile
+from src.cv.skills import CVSkills, build_cv_skills, match_skills
+from src.repositories.job_repository import connect_readonly
 
 CASES_PATH = Path("tests/eval/cv_cases.yaml")
 RESULTS_DIR = Path("tests/eval/results")
@@ -721,8 +721,8 @@ def main() -> None:
             "original_meta": old["meta"],
         }
     else:
-        from config.database import VECTOR_DB  # import di sini: butuh .env
-        from config.llm import EMBEDDING, LLM_MODEL
+        from src.config.database import VECTOR_DB  # import di sini: butuh .env
+        from src.config.llm import EMBEDDING, LLM_MODEL
 
         for case in cases:
             record, cv_text = run_case(

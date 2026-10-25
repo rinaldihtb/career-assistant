@@ -16,10 +16,10 @@ from typing import Any
 
 import streamlit as st
 
-from components.job_description import description_to_markdown, escape_markdown
-from containers import job_repository, supervisor_agent
-from helpers.format import format_salary
-from models.agent import AgentResult
+from src.components.job_description import description_to_markdown, escape_markdown
+from src.containers import job_repository, supervisor_agent
+from src.helpers.format import format_salary
+from src.models.agent import AgentResult
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ Perintah lain: `make help`.
 
 | Perintah | Fungsi | Butuh API key |
 |---|---|---|
-| `make run` | Jalankan Streamlit (wajib lewat make: butuh `PYTHONPATH` root) | ya |
+| `make run` | Jalankan Streamlit | ya |
 | `make test` | Unit test dengan LLM palsu | tidak |
 | `make lint` | Ruff untuk agent, repository, model, dan test | tidak |
 | `make sample-sql` | Cek validasi dan eksekusi SQL ke database asli | tidak |
@@ -49,9 +49,9 @@ UI cukup memanggil satu fungsi. Riwayat chat dikirim apa adanya dari
 ```python
 import os
 
-from config.database import VECTOR_DB
-from config.llm import LLM_MODEL
-from agents.supervisor_agent import run_supervisor
+from src.config.database import VECTOR_DB
+from src.config.llm import LLM_MODEL
+from src.agents.supervisor_agent import run_supervisor
 
 DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
 

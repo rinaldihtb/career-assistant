@@ -24,8 +24,8 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 from qdrant_client import models
 
-from agents.prompts import RAG_ANSWER_SYSTEM
-from repositories.job_repository import JobRepository
+from src.agents.prompts import RAG_ANSWER_SYSTEM
+from src.repositories.job_repository import JobRepository
 
 TOP_N = 5
 CANDIDATE_K = 20

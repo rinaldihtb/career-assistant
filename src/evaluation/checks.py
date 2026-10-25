@@ -15,7 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from models.agent import AgentResult, LLMUsage
+from src.models.agent import AgentResult, LLMUsage
 
 # Sama dengan pola sitasi di rag_agent.py: "[ID:123]" atau "ID: 123".
 _CITATION = re.compile(r"\bID:\s*(\d+)", re.IGNORECASE)

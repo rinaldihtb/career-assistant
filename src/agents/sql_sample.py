@@ -15,8 +15,8 @@ from contextlib import closing
 
 from dotenv import load_dotenv
 
-from agents.prompts import SQL_FAILED_MESSAGE, SQL_NOT_RELEVANT_MESSAGE
-from agents.sql_agent import SQLExecutionError, execute_sql, run_sql_agent, validate_sql
+from src.agents.prompts import SQL_FAILED_MESSAGE, SQL_NOT_RELEVANT_MESSAGE
+from src.agents.sql_agent import SQLExecutionError, execute_sql, run_sql_agent, validate_sql
 
 load_dotenv()
 DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
@@ -143,7 +143,7 @@ def run_tools_check() -> None:
 
 def run_llm_check() -> None:
     """Jalankan agent lengkap dengan LLM sungguhan dan catat metriknya."""
-    from config.llm import LLM_MODEL  # import di sini: mode tanpa LLM tidak butuh API key
+    from src.config.llm import LLM_MODEL  # import di sini: mode tanpa LLM tidak butuh API key
 
     summary = []
     for question, truth_sql in LLM_QUESTIONS:

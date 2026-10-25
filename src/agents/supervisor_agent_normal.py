@@ -5,7 +5,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools.base import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
-from repositories.job_repository import JobRepository
+from src.repositories.job_repository import JobRepository
 
 SUPERVISOR_AGENT_SYSTEM = """You are a career-assistant supervisor.
 Use ask_sql_agent for structured questions about counts, salaries, locations, and work types.

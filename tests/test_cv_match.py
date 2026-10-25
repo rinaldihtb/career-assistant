@@ -6,7 +6,7 @@ Tanpa API: embedding dan Qdrant diganti stub; database memakai fixture ``jobs_db
 import pytest
 from langchain_core.documents import Document
 
-from cv.match import (
+from src.cv.match import (
     MatchConfig,
     aggregate_job_scores,
     combine_score,
@@ -15,8 +15,8 @@ from cv.match import (
     scale_semantic,
     skill_score,
 )
-from cv.profile import CVProfile, Experience
-from repositories.job_repository import get_job_descriptions
+from src.cv.profile import CVProfile, Experience
+from src.repositories.job_repository import get_job_descriptions
 
 FILLER = " Detail tanggung jawab dan kualifikasi untuk posisi ini."
 

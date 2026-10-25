@@ -7,8 +7,8 @@ relevan (pilot, akuntan Surabaya, dokter Medan) dicek di ``make sample-rag-llm``
 
 import pytest
 
-from agents.prompts import RAG_FAILED_MESSAGE, RAG_NO_CANDIDATE_MESSAGE
-from agents.rag_agent import (
+from src.agents.prompts import RAG_FAILED_MESSAGE, RAG_NO_CANDIDATE_MESSAGE
+from src.agents.rag_agent import (
     MAX_DESCRIPTION_CHARS,
     check_citations,
     format_job_for_prompt,
