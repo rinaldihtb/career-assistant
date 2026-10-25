@@ -330,7 +330,7 @@ def test_prepare_display_multi_builds_display_per_part(jobs_db):
 
     assert display.text == "" and display.cards == []
     assert [len(part.cards) for part in display.parts] == [0, 1, 0]
-    assert display.parts[1].text == "**Lowongan data analyst**\nAda satu:"
+    assert display.parts[1].text == "**Lowongan data analyst**\n\nAda satu:"
 
 
 def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
@@ -342,7 +342,7 @@ def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
     assert not app.exception
     texts = [md.value for md in app.markdown]
     assert f"**Rata-rata gaji?**\n{SQL_RESULT.answer}" in texts
-    assert "**Lowongan data analyst**\nAda satu:" in texts
+    assert "**Lowongan data analyst**\n\nAda satu:" in texts
     assert "**Data Analyst**  \nPT Alpha" in texts  # kartu RAG
     assert "**Kenapa cocok:** cocok." in texts
     assert "Catatan: sebagian permintaan tidak dijalankan." in texts

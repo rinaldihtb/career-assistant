@@ -406,7 +406,9 @@ def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:
     pertama diikuti ``)``, bukan ``:``.
 
     Returns:
-        ``(pembuka, {id: catatan})``. Baris tanpa ``[ID:x]`` masuk ke pembuka.
+        ``(pembuka, {id: catatan})``. Baris tanpa ``[ID:x]`` masuk ke pembuka, dipisah baris
+        kosong agar Markdown merendernya sebagai paragraf terpisah (judul bagian jawaban
+        gabungan tidak menempel pada kalimat pembuka).
     """
     intro_lines: list[str] = []
     reasons: dict[int, str] = {}
@@ -419,7 +421,7 @@ def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:
         rest = match.group(2)
         _, separator, reason = rest.partition("): ")
         reasons[int(match.group(1))] = (reason if separator else rest).strip(" -:")
-    return "\n".join(intro_lines), reasons
+    return "\n\n".join(intro_lines), reasons
 
 
 def _number(value: int) -> str:

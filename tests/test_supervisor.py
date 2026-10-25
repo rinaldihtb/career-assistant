@@ -187,8 +187,8 @@ def test_sql_and_rag_subtasks_are_combined_in_plan_order(jobs_db, store):
 
     assert result.source == "multi"
     assert [part.source for part in result.parts] == ["sql", "rag"]
-    assert result.parts[0].answer == f"**{q_sql}**\nAda 3 lowongan."
-    assert result.parts[1].answer == f"**{q_rag}**\n- [ID:1] Data Analyst: cocok."
+    assert result.parts[0].answer == f"**{q_sql}**\n\nAda 3 lowongan."
+    assert result.parts[1].answer == f"**{q_rag}**\n\n- [ID:1] Data Analyst: cocok."
     assert result.answer == "\n\n".join(part.answer for part in result.parts)
     assert result.job_ids == [1]
     steps = [call.step for call in result.usage.calls]
@@ -545,7 +545,7 @@ def test_cv_gap_and_sql_are_combined(jobs_db, store):
 
     assert result.source == "multi"
     assert [part.source for part in result.parts] == ["cv", "sql"]
-    assert result.parts[0].answer.startswith(f"**{q_gap}**\nDari 2 lowongan")
+    assert result.parts[0].answer.startswith(f"**{q_gap}**\n\nDari 2 lowongan")
     assert "- Power BI: 2 dari 2 lowongan" in result.parts[0].answer
     assert [call.step for call in result.usage.calls] == ["planner", "sql_generate", "sql_answer"]
 

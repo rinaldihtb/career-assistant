@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -225,9 +226,35 @@ def test_letter_to_docx_keeps_paragraphs_and_line_breaks():
     assert [p.text for p in document.paragraphs] == [
         "Yth. Tim,",
         "Isi surat.",
-        "Hormat saya,\nNadia",
+        "Hormat saya,",
+        "Nadia",
     ]
     assert document.core_properties.author == "Nadia"
+
+
+def test_letter_to_docx_uses_formal_letter_format():
+    data = letter_to_docx("Yth. Tim,\n\nIsi surat.\n\nHormat saya,\nNadia")
+
+    document = Document(io.BytesIO(data))
+    section = document.sections[0]
+    normal = document.styles["Normal"]
+    salutation, body, closing, signer = document.paragraphs
+    assert (round(section.page_width.cm, 1), round(section.page_height.cm, 1)) == (21.0, 29.7)
+    assert round(section.left_margin.cm, 1) == round(section.right_margin.cm, 1) == 2.5
+    assert (normal.font.name, normal.font.size.pt) == ("Times New Roman", 12)
+    assert normal.paragraph_format.line_spacing == 1.15
+    assert body.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert salutation.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    assert closing.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    assert signer.paragraph_format.space_before.pt == 48
+
+
+def test_letter_to_docx_without_closing_keeps_last_block():
+    data = letter_to_docx("Isi surat.\n\nBaris satu\nBaris dua")
+
+    document = Document(io.BytesIO(data))
+    assert [p.text for p in document.paragraphs] == ["Isi surat.", "Baris satu\nBaris dua"]
+    assert all(p.paragraph_format.space_before is None for p in document.paragraphs)
 
 
 def test_anonymous_advertiser_is_not_used_as_company():

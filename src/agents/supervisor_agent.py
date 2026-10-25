@@ -443,7 +443,7 @@ def synthesize(state: SupervisorState) -> dict:
 
     with_titles = len(subresults) > 1
     parts = [
-        result.model_copy(update={"answer": f"**{task['question']}**\n{result.answer}"})
+        result.model_copy(update={"answer": f"**{task['question']}**\n\n{result.answer}"})
         if with_titles
         else result
         for task, result in zip(state["subtasks"], subresults, strict=True)
