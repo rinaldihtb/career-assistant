@@ -72,11 +72,12 @@ from agents.prompts import (
     SUPERVISOR_SKIPPED_NOTE,
     SUPERVISOR_UNSUPPORTED_MESSAGE,
 )
-from agents.rag_agent import run_rag_agent
+from agents.rag_agent import build_place_index, detect_places, run_rag_agent
 from agents.sql_agent import run_sql_agent
 from cv.match import MatchResult
 from cv.profile import CVProfile
 from models.agent import AgentResult, LLMUsage
+from repositories.job_repository import get_job_locations
 
 Agent = Literal["sql", "rag"]
 CVAgent = Literal["sql", "rag", "cv_match", "cv_gap"]
@@ -328,7 +329,8 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
     Saat CV aktif, rujukan diri yang tersisa di pertanyaan mandiri ``sql``/``rag`` diganti
     dengan posisi tujuan inti (``replace_self_references``) sebelum dedup. Agent itu tidak
     membaca profil, dan aturan prompt saja tidak cukup: C3-03 menyisakan "CV-ku" di 2 dari 4
-    run, sehingga RAG mengembalikan lowongan Sales untuk CV HR.
+    run, sehingga RAG mengembalikan lowongan Sales untuk CV HR. Setelah itu
+    ``align_cv_subtasks`` membetulkan ``cv_match`` yang tidak sesuai syarat pengguna.
     """
     question = state["question"].strip()
     usage = LLMUsage()
@@ -360,6 +362,7 @@ def plan_question(state: SupervisorState, runtime: Runtime[SupervisorContext]) -
             else task.model_copy(update={"question": replace_self_references(task.question, role)})
             for task in tasks
         ]
+        tasks = align_cv_subtasks(question, tasks, profile, runtime.context.db_path)
     subtasks = _unique_subtasks(tasks)
     if not subtasks:
         return _fallback(question, usage, "Planner tidak memberi sub-tugas")
@@ -599,6 +602,57 @@ def profile_role(profile: CVProfile) -> str:
         atau string kosong jika profil tidak punya posisi maupun skill.
     """
     return " atau ".join(target_roles(profile.target_role) or profile.skills[:2])
+
+
+def align_cv_subtasks(
+    question: str, tasks: Sequence[CVSubTask], profile: CVProfile, db_path: str | Path
+) -> list[CVSubTask]:
+    """Betulkan ``cv_match`` yang bertentangan dengan syarat di pertanyaan pengguna.
+
+    ``cv_match`` tidak bisa memfilter apa pun, tetapi planner tetap memilihnya walau aturan
+    prompt melarang (diukur dengan 3 ulangan + 1 run tunggal):
+
+    - Rujukan diri + kota tanpa sub-tugas ``sql``/``rag`` (C3-03, 4 dari 4 run: "Surabaya"
+      hilang): ``cv_match`` diganti ``rag`` dengan pertanyaan pengguna yang rujukan dirinya
+      diganti posisi tujuan, sehingga kota dan pengecualian kota tetap utuh.
+    - ``cv_match`` di samping ``sql``/``rag`` yang sudah memuat posisi tujuan dari profil
+      (C4-03 4 dari 4 run, C4-02 2 dari 4): ``cv_match`` dibuang. Hanya jika pengguna merujuk
+      dirinya satu kali dan tidak mengetik posisinya sendiri; "lowongan yang cocok buatku,
+      lalu berapa lowongan data analyst di Jakarta?" (pengguna mengetik posisinya) tetap
+      dua sub-tugas.
+
+    Lokasi dideteksi dengan kamus tempat yang sama dengan RAG agent; jika database tidak bisa
+    dibaca, aturan pertama dilewati.
+    """
+    if not any(task.agent == "cv_match" for task in tasks):
+        return list(tasks)
+    references = len(_SELF_REFERENCE.findall(question))
+    if not references:
+        return list(tasks)
+    data_tasks = [task for task in tasks if task.agent in ("sql", "rag")]
+    if not data_tasks:
+        if not _mentions_place(question, db_path):
+            return list(tasks)
+        rag = CVSubTask(
+            agent="rag", question=replace_self_references(question, profile_role(profile))
+        )
+        return [rag if task.agent == "cv_match" else task for task in tasks]
+
+    roles = [role.lower() for role in target_roles(profile.target_role) or profile.skills[:2]]
+    typed_role = any(role in question.lower() for role in roles)
+    personalized = any(role in task.question.lower() for task in data_tasks for role in roles)
+    if references == 1 and personalized and not typed_role:
+        return [task for task in tasks if task.agent != "cv_match"]
+    return list(tasks)
+
+
+def _mentions_place(question: str, db_path: str | Path) -> bool:
+    """True jika pertanyaan menyebut tempat yang ada di kolom lokasi lowongan."""
+    try:
+        place_index = build_place_index(get_job_locations(db_path))
+    except Exception:  # noqa: BLE001 - deteksi tempat opsional; planner tetap jalan tanpa itu
+        return False
+    return bool(detect_places(question, place_index))
 
 
 def replace_self_references(question: str, role: str) -> str:

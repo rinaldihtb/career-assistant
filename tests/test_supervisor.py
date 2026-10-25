@@ -39,8 +39,10 @@ from agents.supervisor_agent import (
     MAX_PROFILE_SKILLS,
     SUPERVISOR_GRAPH,
     CVPlan,
+    CVSubTask,
     Plan,
     SupervisorContext,
+    align_cv_subtasks,
     core_role,
     format_history,
     format_profile,
@@ -752,3 +754,113 @@ def test_format_profile_sends_core_roles():
 def test_profile_role_falls_back_to_first_two_skills():
     assert profile_role(CVProfile(skills=["SQL", "Excel", "Python"])) == "SQL atau Excel"
     assert profile_role(CVProfile()) == ""
+
+
+# --- CV aktif: cv_match yang bertentangan dengan syarat pengguna ---------------
+
+HR = CVProfile(target_role="HR Generalist", skills=["Rekrutmen"])
+
+
+def _tasks(*pairs):
+    return [CVSubTask(agent=agent, question=question) for agent, question in pairs]
+
+
+def _pairs(tasks):
+    return [(task.agent, task.question) for task in tasks]
+
+
+def test_cv_match_with_self_reference_and_city_becomes_rag(jobs_db):
+    tasks = align_cv_subtasks(
+        "Lowongan yang sesuai CV-ku di Bandung",
+        _tasks(("cv_match", "Lowongan yang paling cocok dengan CV-ku")),
+        HR,
+        jobs_db,
+    )
+
+    assert _pairs(tasks) == [("rag", "Lowongan yang sesuai untuk HR Generalist di Bandung")]
+
+
+def test_city_exclusion_is_kept_when_cv_match_becomes_rag(jobs_db):
+    tasks = align_cv_subtasks(
+        "Kerjaan buatku selain Jakarta",
+        _tasks(("cv_match", "Lowongan yang paling cocok dengan CV-ku"), ("cv_gap", "Skill")),
+        HR,
+        jobs_db,
+    )
+
+    assert _pairs(tasks) == [
+        ("rag", "Kerjaan untuk HR Generalist selain Jakarta"),
+        ("cv_gap", "Skill"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Lowongan yang cocok untukku",  # tanpa kota
+        "Lowongan HR Generalist di Bandung",  # tanpa rujukan diri
+        "Lowongan cocok untukku di Atlantis",  # tempat tidak ada di data
+    ],
+)
+def test_cv_match_without_self_reference_and_known_city_is_kept(jobs_db, question):
+    tasks = _tasks(("cv_match", "Lowongan yang paling cocok dengan CV-ku"))
+
+    assert _pairs(align_cv_subtasks(question, tasks, HR, jobs_db)) == _pairs(tasks)
+
+
+def test_unreadable_database_keeps_cv_match(tmp_path):
+    tasks = _tasks(("cv_match", "Lowongan yang paling cocok dengan CV-ku"))
+    question = "Lowongan untukku di Bandung"
+
+    assert _pairs(align_cv_subtasks(question, tasks, HR, tmp_path / "x.sqlite")) == _pairs(tasks)
+
+
+def test_cv_match_next_to_personalized_sql_is_dropped(jobs_db):
+    tasks = align_cv_subtasks(
+        "Lowongan untukku yang gajinya di atas 7 juta",
+        _tasks(
+            ("sql", "Tampilkan daftar lowongan HR Generalist dengan gaji di atas 7 juta."),
+            ("cv_match", "Lowongan yang paling cocok dengan CV-ku"),
+        ),
+        HR,
+        jobs_db,
+    )
+
+    assert _pairs(tasks) == [
+        ("sql", "Tampilkan daftar lowongan HR Generalist dengan gaji di atas 7 juta.")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "sql"),
+    [
+        # Pengguna mengetik posisinya sendiri: dua permintaan berbeda.
+        (
+            "Lowongan yang cocok buatku, lalu berapa lowongan HR generalist di Jakarta?",
+            "Berapa jumlah lowongan HR Generalist di Jakarta?",
+        ),
+        # Dua rujukan diri: statistik posisi tujuan dan daftar lowongan cocok.
+        (
+            "Rata-rata gaji posisi tujuanku berapa, dan lowongan mana yang cocok untukku?",
+            "Berapa rata-rata gaji lowongan HR Generalist?",
+        ),
+        # Sub-tugas SQL tidak memuat posisi tujuan.
+        ("Lowongan cocok untukku dan total lowongan di data?", "Berapa total lowongan?"),
+    ],
+)
+def test_cv_match_for_a_separate_request_is_kept(jobs_db, question, sql):
+    tasks = _tasks(("cv_match", "Lowongan yang paling cocok dengan CV-ku"), ("sql", sql))
+
+    assert _pairs(align_cv_subtasks(question, tasks, HR, jobs_db)) == _pairs(tasks)
+
+
+def test_planner_turns_cv_match_with_city_into_rag(jobs_db, fake_vector_store):
+    llm = ScriptedLLM(
+        plan=plan_reply(("cv_match", "Lowongan yang paling cocok dengan CV-ku"), name="CVPlan")
+    )
+    store = fake_vector_store([(1, LONG, 0.30)])
+    state = _state("Lowongan untukku di Bandung", llm, store, jobs_db, profile=HR)
+
+    assert state["subtasks"] == [
+        {"agent": "rag", "question": "Lowongan untuk HR Generalist di Bandung"}
+    ]
