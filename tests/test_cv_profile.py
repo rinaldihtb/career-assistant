@@ -60,6 +60,7 @@ def extraction_reply(**overrides) -> AIMessage:
         "education_level": "S1",
         "education_major": "Statistika",
         "skills": ["Python", "SQL", "python", " Power  BI ", ""],
+        "languages": ["Inggris (aktif)", "sql"],
         "experiences": [
             {
                 "title": "Data Analyst Intern",
@@ -102,7 +103,7 @@ def test_extracts_and_cleans_profile_with_one_llm_call():
     profile = result.profile
     assert profile.full_name == "Dimas Prakoso"
     assert profile.education_level == "S1"
-    assert profile.skills == ["Python", "SQL", "Power BI"]
+    assert profile.skills == ["Python", "SQL", "Power BI", "Inggris (aktif)"]
     assert profile.experience_months == 12
     assert profile.experience_label == "1-3 tahun"
     assert profile.achievements == [
@@ -207,6 +208,11 @@ def test_unique_achievements_caps_at_max():
 
 def test_achievements_is_the_last_extraction_field():
     assert list(CVExtraction.model_fields)[-1] == "achievements"
+
+
+def test_languages_follow_skills_before_experiences():
+    fields = list(CVExtraction.model_fields)
+    assert fields.index("languages") == fields.index("skills") + 1
 
 
 def test_profile_saved_without_achievements_still_loads():

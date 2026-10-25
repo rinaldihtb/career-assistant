@@ -1,7 +1,7 @@
 """Profil CV terstruktur dari teks CV: 1 panggilan LLM lalu perhitungan deterministik.
 
 LLM (structured output) menyalin fakta: nama, posisi tujuan, lokasi, pendidikan tertinggi,
-skill, daftar pengalaman beserta periodenya, dan pencapaian (kalimat yang dikutip dari CV,
+skill, bahasa, daftar pengalaman beserta periodenya, dan pencapaian (kalimat yang dikutip dari CV,
 untuk isi surat lamaran). Python menghitung lama pengalaman dari periode itu (periode
 tumpang-tindih digabung, "present" = bulan ini), karena LLM tidak tahu tanggal hari ini dan
 mudah salah menjumlahkan periode yang tumpang-tindih.
@@ -63,6 +63,7 @@ class CVExtraction(BaseModel):
     education_level: EducationLevel | None = Field(description="Jenjang pendidikan tertinggi.")
     education_major: str | None = Field(description="Jurusan pada jenjang tertinggi.")
     skills: list[str] = Field(description="Keahlian yang tertulis eksplisit, maksimal 30.")
+    languages: list[str] = Field(description="Bahasa yang tercantum di CV, beserta tingkatnya.")
     experiences: list[Experience] = Field(description="Pekerjaan, magang, dan freelance.")
     achievements: list[Achievement] = Field(
         description="Hasil kerja, proyek, penghargaan, IPK, dan peran organisasi, maksimal 8."
@@ -148,14 +149,18 @@ def extract_cv_profile(
 
 
 def build_profile(extraction: CVExtraction, today: date) -> CVProfile:
-    """Rapikan hasil LLM dan hitung lama pengalaman. Tanpa LLM."""
+    """Rapikan hasil LLM dan hitung lama pengalaman. Tanpa LLM.
+
+    Bahasa digabung ke akhir ``skills``: pencocokan lowongan dan Skill Gap membaca bahasa
+    sebagai skill (misalnya "English" yang diminta lowongan).
+    """
     return CVProfile(
         full_name=_clean(extraction.full_name),
         target_role=_clean(extraction.target_role),
         location=_clean(extraction.location),
         education_level=extraction.education_level,
         education_major=_clean(extraction.education_major),
-        skills=unique_skills(extraction.skills),
+        skills=unique_skills([*extraction.skills, *extraction.languages]),
         experience_months=experience_months(extraction.experiences, today),
         experiences=extraction.experiences,
         achievements=unique_achievements(extraction.achievements),
