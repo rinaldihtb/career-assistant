@@ -11,7 +11,7 @@ from langchain_core.documents import Document
 
 from cv.match import MatchConfig, load_job_skill_index, rank_jobs
 from cv.pdf_text import extract_cv_text
-from cv.profile import CVProfile, CVProfileResult, Experience
+from cv.profile import Achievement, CVProfile, CVProfileResult, Experience
 from cv.skills import build_cv_skills
 from evaluation.run_cv_eval import (
     AGGREGATIONS,
@@ -22,6 +22,7 @@ from evaluation.run_cv_eval import (
     TOP_N,
     analyze,
     calibrate,
+    check_achievements,
     check_profile,
     check_skills,
     choose_config,
@@ -35,6 +36,7 @@ from evaluation.run_cv_eval import (
     rank_candidates,
     run_case,
     same_skill,
+    squash,
 )
 
 REAL_DB = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
@@ -267,6 +269,44 @@ def test_check_profile():
     result = check_profile(profile, {"education_level": "S1", "experiences": 2})
     assert result["education_level"] == {"expected": "S1", "actual": "S1"}
     assert result["experiences"] == {"expected": 2, "actual": 1}
+
+
+ACHIEVEMENT_CV = (
+    "Teknisi Listrik – PT Daya Prima, Gresik\n"
+    "\uf0b7 Merawat 14 panel distribusi dan menurunkan gangguan\nbulanan sebesar 30%.\n"
+    "P\nE\nN\nG\nH\nA\nR\nG\nA\nA\nN\n"
+    "Juara 2 lomba instalasi tingkat provinsi (2021)."
+)
+
+
+def test_squash_ignores_line_breaks_bullets_and_dash_style():
+    assert squash("Teknisi  Listrik – PT\n\uf0b7 Daya") == "teknisilistrik-ptdaya"
+
+
+def test_check_achievements_accepts_quotes_across_line_breaks():
+    achievements = [
+        Achievement(
+            text="Merawat 14 panel distribusi dan menurunkan gangguan bulanan sebesar 30%.",
+            context="Teknisi Listrik - PT Daya Prima",
+        ),
+        Achievement(text="Juara 2 lomba instalasi tingkat provinsi (2021).", context="PENGHARGAAN"),
+        Achievement(text="menurunkan gangguan bulanan", context=None),
+    ]
+    result = check_achievements(achievements, ACHIEVEMENT_CV)
+    assert result == {"count": 3, "numeric": 2, "not_verbatim": [], "context_unknown": 0}
+
+
+def test_check_achievements_flags_changed_numbers_translation_and_unknown_context():
+    achievements = [
+        Achievement(text="Merawat 15 panel distribusi", context="Teknisi Listrik, PT Daya Prima"),
+        Achievement(text="Maintained 14 distribution panels", context="Supervisor, PT Daya Prima"),
+    ]
+    result = check_achievements(achievements, ACHIEVEMENT_CV)
+    assert result["not_verbatim"] == [
+        "Merawat 15 panel distribusi",
+        "Maintained 14 distribution panels",
+    ]
+    assert result["context_unknown"] == 1  # "Supervisor" tidak ada di teks CV
 
 
 # ------------------------------------------------------------------ kalibrasi dan pilihan

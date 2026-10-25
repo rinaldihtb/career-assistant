@@ -416,6 +416,8 @@ CV_FAILED_MESSAGE = "Maaf, hasil Cocokkan CV tidak bisa dibaca. Buka halaman Coc
 # Lama pengalaman tidak diminta dari LLM: model hanya menyalin periode,
 # lalu Python menghitungnya (cv.profile.experience_months), karena LLM tidak tahu
 # tanggal hari ini dan mudah salah menjumlahkan periode yang tumpang-tindih.
+# Aturan 8 meminta pencapaian sebagai kutipan kata per kata, agar angka di surat lamaran bisa
+# dicek terhadap teks CV; kepatuhannya diukur dengan `make eval-cv` (achievements_check).
 CV_PROFILE_SYSTEM = """Kamu mengekstrak profil dari teks CV untuk mencocokkan lowongan kerja di Indonesia.
 
 Aturan:
@@ -425,7 +427,8 @@ Aturan:
 4. location: kota domisili saja (misalnya "Surabaya"), bukan alamat lengkap.
 5. education_level: jenjang tertinggi yang sudah atau sedang ditempuh, dipetakan ke SMA/SMK, D3, D4, S1, S2, atau S3 (Bachelor = S1, Master = S2, Diploma 3 = D3). education_major: jurusan pada jenjang itu.
 6. skills: keahlian yang tertulis eksplisit: skill teknis, tools, software, bahasa pemrograman, metode, bahasa asing, dan soft skill yang dicantumkan sebagai keahlian. Tulis persis seperti di CV, tanpa duplikat, maksimal 30. Jangan mengambil kata sifat dari kalimat deskripsi.
-7. experiences: pekerjaan, magang, dan freelance. Jangan masukkan organisasi kampus, kepanitiaan, atau kegiatan sukarela. start dan end berformat YYYY-MM, atau YYYY jika bulan tidak tertulis; end = "present" jika masih berjalan; null jika tidak tertulis. Jangan menghitung lama pengalaman."""
+7. experiences: pekerjaan, magang, dan freelance. Jangan masukkan organisasi kampus, kepanitiaan, atau kegiatan sukarela. start dan end berformat YYYY-MM, atau YYYY jika bulan tidak tertulis; end = "present" jika masih berjalan; null jika tidak tertulis. Jangan menghitung lama pengalaman.
+8. achievements: maksimal 8 bukti hasil yang tertulis di CV: hasil berangka (jumlah, persentase, nilai uang), proyek, penghargaan, IPK, sertifikasi, dan peran organisasi. Dahulukan yang berangka. text: disalin kata per kata dari CV dalam bahasa aslinya, boleh dipotong menjadi satu kalimat; jangan menerjemahkan, meringkas, atau mengubah angka. context: jabatan dan perusahaan, atau nama bagian CV tempat kalimat itu tertulis, seperti di CV."""
 
 CV_PROFILE_USER = """<cv>
 {cv_text}

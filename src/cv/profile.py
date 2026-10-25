@@ -1,9 +1,10 @@
 """Profil CV terstruktur dari teks CV: 1 panggilan LLM lalu perhitungan deterministik.
 
 LLM (structured output) menyalin fakta: nama, posisi tujuan, lokasi, pendidikan tertinggi,
-skill, dan daftar pengalaman beserta periodenya. Python menghitung lama pengalaman dari
-periode itu (periode tumpang-tindih digabung, "present" = bulan ini), karena LLM tidak tahu
-tanggal hari ini dan mudah salah menjumlahkan periode yang tumpang-tindih.
+skill, daftar pengalaman beserta periodenya, dan pencapaian (kalimat yang dikutip dari CV,
+untuk isi surat lamaran). Python menghitung lama pengalaman dari periode itu (periode
+tumpang-tindih digabung, "present" = bulan ini), karena LLM tidak tahu tanggal hari ini dan
+mudah salah menjumlahkan periode yang tumpang-tindih.
 
 LLM disuntikkan, fungsi tidak pernah melempar exception, dan kegagalan dilaporkan lewat
 ``CVProfileResult.error``. Profil hanya dikembalikan, tidak disimpan ke disk atau log.
@@ -23,6 +24,7 @@ from models.agent import LLMUsage
 
 EducationLevel = Literal["SMA/SMK", "D3", "D4", "S1", "S2", "S3"]
 MAX_SKILLS = 30
+MAX_ACHIEVEMENTS = 8
 PRESENT_WORDS = {"present", "sekarang", "saat ini", "now", "current"}
 _PERIOD = re.compile(r"^(\d{4})(?:-(\d{1,2}))?$")
 
@@ -38,11 +40,21 @@ class Experience(BaseModel):
     )
 
 
+class Achievement(BaseModel):
+    """Satu bukti hasil kerja yang dikutip dari CV: angka, proyek, penghargaan, IPK, organisasi."""
+
+    text: str = Field(description="Kalimat yang disalin kata per kata dari CV.")
+    context: str | None = Field(
+        description="Jabatan dan perusahaan, atau nama bagian CV tempat kalimat itu tertulis."
+    )
+
+
 class CVExtraction(BaseModel):
     """Skema yang dikirim ke LLM sebagai JSON schema.
 
     Semua field wajib (tanpa default) agar skema valid untuk structured output mode strict,
-    sama seperti ``Plan`` di supervisor.
+    sama seperti ``Plan`` di supervisor. ``achievements`` sengaja field terakhir: output ditulis
+    berurutan, jadi field yang dipakai pencocokan lowongan selesai sebelum pencapaian ditulis.
     """
 
     full_name: str | None = Field(description="Nama lengkap pemilik CV.")
@@ -52,6 +64,9 @@ class CVExtraction(BaseModel):
     education_major: str | None = Field(description="Jurusan pada jenjang tertinggi.")
     skills: list[str] = Field(description="Keahlian yang tertulis eksplisit, maksimal 30.")
     experiences: list[Experience] = Field(description="Pekerjaan, magang, dan freelance.")
+    achievements: list[Achievement] = Field(
+        description="Hasil kerja, proyek, penghargaan, IPK, dan peran organisasi, maksimal 8."
+    )
 
 
 class CVProfile(BaseModel):
@@ -65,6 +80,8 @@ class CVProfile(BaseModel):
         contacts: Telepon, email, LinkedIn, dan GitHub hasil regex dari teks CV
             (``cv.contacts``), untuk kop surat lamaran. Bukan output LLM dan tidak
             dikirim ke LLM.
+        achievements: Kutipan pencapaian dari CV untuk isi surat lamaran. Tidak dipakai
+            pencocokan lowongan (``cv.match.profile_query_text``).
     """
 
     full_name: str | None = None
@@ -76,6 +93,7 @@ class CVProfile(BaseModel):
     experience_months: int | None = None
     experiences: list[Experience] = Field(default_factory=list)
     contacts: list[str] = Field(default_factory=list)
+    achievements: list[Achievement] = Field(default_factory=list)
 
     @property
     def experience_label(self) -> str:
@@ -140,6 +158,7 @@ def build_profile(extraction: CVExtraction, today: date) -> CVProfile:
         skills=unique_skills(extraction.skills),
         experience_months=experience_months(extraction.experiences, today),
         experiences=extraction.experiences,
+        achievements=unique_achievements(extraction.achievements),
     )
 
 
@@ -157,6 +176,20 @@ def unique_skills(skills: Sequence[str]) -> list[str]:
             seen.add(key)
             result.append(name)
     return result[:MAX_SKILLS]
+
+
+def unique_achievements(achievements: Sequence[Achievement]) -> list[Achievement]:
+    """Buang kutipan kosong dan duplikat (tanpa membedakan huruf besar), maksimal
+    ``MAX_ACHIEVEMENTS``. Spasi dirapikan dan urutan dari CV dipertahankan."""
+    seen: set[str] = set()
+    result = []
+    for item in achievements:
+        text = " ".join(item.text.split())
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(Achievement(text=text, context=_clean(item.context)))
+    return result[:MAX_ACHIEVEMENTS]
 
 
 def experience_months(experiences: Sequence[Experience], today: date) -> int | None:

@@ -14,12 +14,16 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from cv.profile import (
+    MAX_ACHIEVEMENTS,
     MAX_SKILLS,
+    Achievement,
+    CVExtraction,
     CVProfile,
     Experience,
     experience_label,
     experience_months,
     extract_cv_profile,
+    unique_achievements,
     unique_skills,
 )
 
@@ -64,6 +68,15 @@ def extraction_reply(**overrides) -> AIMessage:
                 "end": "2025-12",
             },
         ],
+        "achievements": [
+            {
+                "text": " Membuat  3 dashboard penjualan. ",
+                "context": "Data Analyst Intern, PT Ritel",
+            },
+            {"text": "membuat 3 dashboard penjualan.", "context": None},
+            {"text": "  ", "context": None},
+            {"text": "IPK 3,40", "context": "Pendidikan"},
+        ],
     }
     args.update(overrides)
     return AIMessage(
@@ -92,6 +105,10 @@ def test_extracts_and_cleans_profile_with_one_llm_call():
     assert profile.skills == ["Python", "SQL", "Power BI"]
     assert profile.experience_months == 12
     assert profile.experience_label == "1-3 tahun"
+    assert profile.achievements == [
+        Achievement(text="Membuat 3 dashboard penjualan.", context="Data Analyst Intern, PT Ritel"),
+        Achievement(text="IPK 3,40", context="Pendidikan"),
+    ]
     assert len(llm.received) == 1
     assert [call.step for call in result.usage.calls] == ["cv_profile"]
     assert result.usage.total_tokens == 1050
@@ -180,6 +197,22 @@ def test_unique_skills_caps_at_max():
     skills = [f"Skill {i}" for i in range(MAX_SKILLS + 5)]
 
     assert unique_skills(skills) == skills[:MAX_SKILLS]
+
+
+def test_unique_achievements_caps_at_max():
+    items = [Achievement(text=f"Proyek {i}", context=None) for i in range(MAX_ACHIEVEMENTS + 3)]
+
+    assert unique_achievements(items) == items[:MAX_ACHIEVEMENTS]
+
+
+def test_achievements_is_the_last_extraction_field():
+    assert list(CVExtraction.model_fields)[-1] == "achievements"
+
+
+def test_profile_saved_without_achievements_still_loads():
+    profile = CVProfile.model_validate({"full_name": "Dimas", "skills": ["SQL"]})
+
+    assert profile.achievements == []
 
 
 def test_profile_can_be_corrected_by_user():
