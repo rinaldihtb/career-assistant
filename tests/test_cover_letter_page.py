@@ -6,6 +6,7 @@ dengan pengaturan terpilih, editan yang tersimpan, dan pesan gagal tanpa isi err
 dan format surat dites di test_cv_letter.py.
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from streamlit.testing.v1 import AppTest
 
 from components import cover_letter, cv_match
 from components.cover_letter import (
+    CONTACT_KEY,
     DEPENDENCY_ERROR,
     JOB_GONE,
     LANGUAGE_KEY,
@@ -23,9 +25,11 @@ from components.cover_letter import (
     NO_JOB,
     WORDS_KEY,
     cached_letter,
+    contact_line,
     current_settings,
     find_match,
     letter_caption,
+    letter_text,
 )
 from components.cv_match import LETTER_JOB_KEY, CVDependencies
 from cv.ingest import CV_STATE_KEY
@@ -36,7 +40,13 @@ from models.agent import LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
 DEPS = CVDependencies(llm="llm", embeddings="emb", vector_store="store", db_path="db.sqlite")
-PROFILE = CVProfile(full_name="BUDI CONTOH", target_role="Data Analyst", skills=["SQL"])
+PROFILE = CVProfile(
+    full_name="BUDI CONTOH",
+    target_role="Data Analyst",
+    location="Malang, Jawa Timur",
+    skills=["SQL"],
+    contacts=["0812-3456-7890", "budi@mail.com"],
+)
 LETTER_USAGE = LLMUsage(llm_calls=1, input_tokens=1200, output_tokens=420, total_tokens=1620)
 LETTER = CoverLetter(paragraphs=["Saya melamar posisi ini.", "Saya terbiasa memakai SQL."])
 
@@ -152,11 +162,16 @@ def test_opening_writes_letter_once_with_default_settings(letters):
     assert call["description"] == "Analisis data penjualan dengan SQL dan Python."
     assert call["settings"] == LetterSettings()
     text = app.text_area[0].value
-    assert text.startswith("Yth. Tim Rekrutmen PT Alpha,\n\nSaya melamar posisi ini.")
+    assert text.startswith("Malang, ")
+    assert "Kepada Yth.\nTim Rekrutmen\nPT Alpha\n\n" in text
+    assert "Perihal: Lamaran Pekerjaan sebagai Data Analyst\n\nDengan hormat,\n\n" in text
+    assert "Dengan hormat,\n\nSaya melamar posisi ini." in text
     assert text.endswith("Hormat saya,\nBudi Contoh")
     assert "Bahasa Indonesia · Standar · 1 panggilan LLM (1.620 token)." in _texts(app)
     assert app.selectbox(key=WORDS_KEY).options == ["Singkat", "Standar", "Panjang"]
     assert not app.download_button(key="cv_letter_download").disabled
+    assert not app.download_button(key="cv_letter_download_pdf").disabled
+    assert app.text_input[0].value == "Malang, Jawa Timur  ·  0812-3456-7890  ·  budi@mail.com"
 
     app.run()
     assert len(letters["calls"]) == 1
@@ -172,7 +187,9 @@ def test_regenerate_uses_selected_language_and_length(letters):
     assert letters["calls"][1]["settings"] == LetterSettings(language="en", words=150)
     entry = app.session_state[CV_STATE_KEY][LETTERS_KEY][1]
     assert entry["round"] == 2
-    assert app.text_area[0].value.startswith("Dear PT Alpha Hiring Team,")
+    assert (
+        "Re: Application for Data Analyst\n\nDear PT Alpha Hiring Team," in app.text_area[0].value
+    )
     assert app.text_area[0].value.endswith("Sincerely,\nBudi Contoh")
 
 
@@ -205,6 +222,7 @@ def test_failure_shows_message_without_error_text(letters):
     assert app.warning[0].value == LETTER_FAILED
     assert not any("BUDI" in text for text in _texts(app))
     assert app.download_button(key="cv_letter_download").disabled
+    assert app.download_button(key="cv_letter_download_pdf").disabled
     app.run()
     assert len(letters["calls"]) == 1
 
@@ -239,7 +257,17 @@ def test_card_button_opens_registered_letter_page(letters):
     assert not app.exception
     assert app.session_state[CV_STATE_KEY][LETTER_JOB_KEY] == 3
     assert app.markdown[0].value == "## Graphic Designer"
-    assert app.text_area[0].value.startswith("Yth. Tim Rekrutmen,\n\n")
+    assert "Kepada Yth.\nTim Rekrutmen\n\nPerihal: " in app.text_area[0].value
+
+
+def test_contact_edit_is_kept_for_other_letters(letters):
+    app = _app(state())
+    app.text_input[0].input("Malang  ·  budi@mail.com").run()
+
+    cv = app.session_state[CV_STATE_KEY]
+    assert cv[CONTACT_KEY] == "Malang  ·  budi@mail.com"
+    reopened = _app({**cv, LETTER_JOB_KEY: 3})
+    assert reopened.text_input[0].value == "Malang  ·  budi@mail.com"
 
 
 # --- Helper tanpa Streamlit ----------------------------------------------------
@@ -261,6 +289,23 @@ def test_current_settings_default_and_selected():
     assert current_settings({LANGUAGE_KEY: "en", WORDS_KEY: 350}) == LetterSettings(
         language="en", words=350
     )
+
+
+def test_letter_text_uses_header_from_job_and_profile_city():
+    entry = {
+        "settings": LetterSettings(),
+        "result": CoverLetterResult(letter=LETTER, usage=LETTER_USAGE),
+    }
+
+    text = letter_text(entry, MATCHES.matches[0], PROFILE, today=date(2026, 10, 25))
+
+    assert text.startswith("Malang, 25 Oktober 2026\n\nKepada Yth.\nTim Rekrutmen\nPT Alpha\n\n")
+
+
+def test_contact_line_skips_empty_parts():
+    assert contact_line(PROFILE) == "Malang, Jawa Timur  ·  0812-3456-7890  ·  budi@mail.com"
+    assert contact_line(CVProfile(contacts=["a@b.c"])) == "a@b.c"
+    assert contact_line(CVProfile()) == ""
 
 
 def test_letter_caption_shows_settings_and_cost():

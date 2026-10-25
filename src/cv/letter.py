@@ -8,18 +8,17 @@ Prompt berisi profil (posisi tujuan, pendidikan, skill, pengalaman per jabatan) 
 deskripsi). Teks CV, nama, dan lokasi pelamar tidak dikirim. Total lama pengalaman juga tidak
 dikirim, agar surat tidak menyebut jumlah tahun yang tidak tertulis di CV.
 
+Header surat (tanggal, penerima, perihal) juga disusun Python (``letter_header``); file .docx dan
+.pdf dibuat di ``cv.letter_file``.
+
 LLM disuntikkan, fungsi tidak pernah melempar exception, dan kegagalan ada di
 ``CoverLetterResult.error``. Halaman surat meng-cache hasil per ``version`` profil dan lowongan.
 """
 
-import io
 import re
+from datetime import date
 from typing import Literal
 
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -49,10 +48,25 @@ ANONYMOUS_COMPANIES = frozenset({"pengiklan anonim"})
 GREETINGS = {"id": "Yth. Tim Rekrutmen {company},", "en": "Dear {company} Hiring Team,"}
 GREETINGS_NO_COMPANY = {"id": "Yth. Tim Rekrutmen,", "en": "Dear Hiring Team,"}
 CLOSINGS = {"id": "Hormat saya,", "en": "Sincerely,"}
+# Surat berbahasa Indonesia dengan blok penerima memakai salam baku "Dengan hormat,"; nama
+# perusahaan sudah ada di blok penerima.
+GREETING_WITH_HEADER_ID = "Dengan hormat,"
+RECIPIENTS = {"id": "Kepada Yth.\nTim Rekrutmen", "en": "Recruitment Team"}
+SUBJECTS = {
+    "id": "Perihal: Lamaran Pekerjaan sebagai {title}",
+    "en": "Re: Application for {title}",
+}
+MONTHS = {
+    "id": (
+        "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+        "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+    ),
+    "en": (
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    ),
+}  # fmt: skip
 _FILE_NAME_UNSAFE = re.compile(r"[^\w\- ]+")
-# Format .docx surat (letter_to_docx). Ruang tanda tangan sekitar 3 baris teks 12 pt.
-LETTER_FONT = "Times New Roman"
-SIGNATURE_SPACE = Pt(48)
 
 
 class LetterSettings(BaseModel):
@@ -192,89 +206,48 @@ def letter_to_text(
     company: str | None,
     name: str,
     language: LetterLanguage = "id",
+    header: str = "",
 ) -> str:
-    """Surat lengkap sebagai teks: salam pembuka, paragraf isi, salam penutup, dan nama.
+    """Surat lengkap sebagai teks: header, salam pembuka, paragraf isi, salam penutup, nama.
 
     Antarbagian dipisah satu baris kosong; salam penutup dan nama dipisah satu baris baru.
+    ``header`` dari ``letter_header`` (boleh kosong). Dengan header, surat berbahasa Indonesia
+    dibuka dengan "Dengan hormat,", karena penerima sudah ditulis di header.
     """
     company = hiring_company(company)
-    greeting = (
-        GREETINGS[language].format(company=company) if company else GREETINGS_NO_COMPANY[language]
-    )
-    blocks = [greeting, *letter.paragraphs, f"{CLOSINGS[language]}\n{name}"]
-    return "\n\n".join(blocks)
+    if header and language == "id":
+        greeting = GREETING_WITH_HEADER_ID
+    elif company:
+        greeting = GREETINGS[language].format(company=company)
+    else:
+        greeting = GREETINGS_NO_COMPANY[language]
+    blocks = [header, greeting, *letter.paragraphs, f"{CLOSINGS[language]}\n{name}"]
+    return "\n\n".join(block for block in blocks if block)
 
 
-def letter_to_docx(text: str, *, author: str = "") -> bytes:
-    """File .docx dari teks surat (mungkin sudah diedit pengguna). Tanpa LLM.
+def letter_header(
+    match: JobMatch, *, language: LetterLanguage, city: str | None, today: date
+) -> str:
+    """Tanggal, blok penerima, dan perihal surat. Disusun Python dari data lowongan, tanpa LLM.
 
-    Blok yang dipisah baris kosong menjadi paragraf Word; baris baru di dalam blok menjadi
-    line break. Format surat formal: A4, margin 2,5 cm, Times New Roman 12 pt, spasi 1,15,
-    paragraf isi rata kiri-kanan. Blok satu baris yang berakhir koma (salam pembuka) rata
-    kiri. Blok terakhir yang diawali salam penutup ("Hormat saya,") dipecah menjadi salam
-    dan nama dengan ruang tanda tangan di antaranya. Tanpa format ini, template bawaan
-    python-docx menghasilkan kertas Letter dan teks rata kiri tanpa ruang tanda tangan.
+    Bahasa Indonesia: "Kota, 25 Oktober 2026" (kota dari profil, bagian sebelum koma pertama;
+    tanpa kota hanya tanggal). Penerima: tim rekrutmen, perusahaan (dilewati untuk Pengiklan
+    Anonim), dan baris pertama lokasi lowongan. Perihal memuat judul lowongan.
     """
-    document = Document()
-    document.core_properties.author = author
-    document.core_properties.title = "Surat lamaran"
-    _format_letter_document(document)
-
-    blocks = [block.splitlines() for block in re.split(r"\n\s*\n", text.strip())]
-    closing = blocks.pop() if _is_closing(blocks) else []
-    for lines in blocks:
-        single_salutation = len(lines) == 1 and lines[0].strip().endswith(",")
-        _add_lines(
-            document,
-            lines,
-            WD_ALIGN_PARAGRAPH.LEFT if single_salutation else WD_ALIGN_PARAGRAPH.JUSTIFY,
-        )
-    if closing:
-        _add_lines(document, closing[:1], WD_ALIGN_PARAGRAPH.LEFT)
-        signer = _add_lines(document, closing[1:], WD_ALIGN_PARAGRAPH.LEFT)
-        signer.paragraph_format.space_before = SIGNATURE_SPACE
-    buffer = io.BytesIO()
-    document.save(buffer)
-    return buffer.getvalue()
+    day = f"{today.day} {MONTHS[language][today.month - 1]} {today.year}"
+    town = " ".join((city or "").split(",")[0].split())
+    dated = f"{town}, {day}" if town and language == "id" else day
+    location = " ".join((match.location or "").split("\n")[0].split())
+    recipient = [RECIPIENTS[language], hiring_company(match.company_name) or "", location]
+    subject = SUBJECTS[language].format(title=" ".join(match.job_title.split()))
+    return "\n\n".join([dated, "\n".join(line for line in recipient if line), subject])
 
 
-def _format_letter_document(document) -> None:
-    """Ukuran kertas, margin, dan gaya Normal untuk surat formal."""
-    for section in document.sections:
-        section.page_width, section.page_height = Cm(21), Cm(29.7)
-        section.left_margin = section.right_margin = Cm(2.5)
-        section.top_margin = section.bottom_margin = Cm(2.5)
-    normal = document.styles["Normal"]
-    normal.font.name = LETTER_FONT
-    normal.font.size = Pt(12)
-    # Nama font juga diisi untuk teks Asia Timur; tanpa itu Word memakai font tema di sebagian teks.
-    normal.element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), LETTER_FONT)
-    normal.paragraph_format.space_before = Pt(0)
-    normal.paragraph_format.space_after = Pt(8)
-    normal.paragraph_format.line_spacing = 1.15
-
-
-def _is_closing(blocks: list[list[str]]) -> bool:
-    """True jika blok terakhir berisi salam penutup berakhiran koma lalu nama."""
-    return len(blocks) > 1 and len(blocks[-1]) > 1 and blocks[-1][0].strip().endswith(",")
-
-
-def _add_lines(document, lines: list[str], alignment):
-    """Satu paragraf; baris berikutnya dipisah line break. Returns: paragraf itu."""
-    paragraph = document.add_paragraph()
-    paragraph.paragraph_format.alignment = alignment
-    for index, line in enumerate(lines):
-        if index:
-            paragraph.add_run().add_break()
-        paragraph.add_run(line.strip())
-    return paragraph
-
-
-def letter_file_name(match: JobMatch) -> str:
+def letter_file_name(match: JobMatch, extension: str = "docx") -> str:
     """Nama file unduhan, misalnya "Surat lamaran - Data Analyst - PT Contoh.docx"."""
     parts = ["Surat lamaran", match.job_title, hiring_company(match.company_name) or ""]
     cleaned = [" ".join(_FILE_NAME_UNSAFE.sub(" ", part).split()) for part in parts]
-    return " - ".join(part for part in cleaned if part)[:120] + ".docx"
+    return " - ".join(part for part in cleaned if part)[:120] + f".{extension}"
 
 
 def hiring_company(name: str | None) -> str | None:

@@ -4,12 +4,10 @@ LLM palsu membalas ``AIMessage`` berisi tool call ``CoverLetter``, bentuk yang d
 structured output LangChain (pola sama dengan test_cv_plan.py).
 """
 
-import io
+from datetime import date
 from typing import Any
 
 import pytest
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -23,8 +21,8 @@ from cv.letter import (
     generate_cover_letter,
     hiring_company,
     letter_file_name,
+    letter_header,
     letter_prompt_input,
-    letter_to_docx,
     letter_to_text,
     signer_name,
 )
@@ -219,42 +217,44 @@ def test_letter_to_text_adds_greeting_closing_and_name():
     assert english.endswith("Sincerely,\nNadia")
 
 
-def test_letter_to_docx_keeps_paragraphs_and_line_breaks():
-    data = letter_to_docx("Yth. Tim,\n\nIsi surat.\n\n\nHormat saya,\nNadia", author="Nadia")
+def test_letter_header_has_date_recipient_and_subject():
+    job = MATCH.model_copy(update={"location": "Jakarta Selatan, Jakarta Raya\n(Hibrid)"})
+    today = date(2026, 10, 5)
 
-    document = Document(io.BytesIO(data))
-    assert [p.text for p in document.paragraphs] == [
-        "Yth. Tim,",
-        "Isi surat.",
-        "Hormat saya,",
-        "Nadia",
-    ]
-    assert document.core_properties.author == "Nadia"
+    indonesian = letter_header(job, language="id", city="Malang, Jawa Timur", today=today)
+    english = letter_header(job, language="en", city="Malang", today=today)
 
-
-def test_letter_to_docx_uses_formal_letter_format():
-    data = letter_to_docx("Yth. Tim,\n\nIsi surat.\n\nHormat saya,\nNadia")
-
-    document = Document(io.BytesIO(data))
-    section = document.sections[0]
-    normal = document.styles["Normal"]
-    salutation, body, closing, signer = document.paragraphs
-    assert (round(section.page_width.cm, 1), round(section.page_height.cm, 1)) == (21.0, 29.7)
-    assert round(section.left_margin.cm, 1) == round(section.right_margin.cm, 1) == 2.5
-    assert (normal.font.name, normal.font.size.pt) == ("Times New Roman", 12)
-    assert normal.paragraph_format.line_spacing == 1.15
-    assert body.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
-    assert salutation.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.LEFT
-    assert closing.paragraph_format.alignment == WD_ALIGN_PARAGRAPH.LEFT
-    assert signer.paragraph_format.space_before.pt == 48
+    assert indonesian == (
+        "Malang, 5 Oktober 2026\n\n"
+        "Kepada Yth.\nTim Rekrutmen\nPT Contoh Jaya\nJakarta Selatan, Jakarta Raya\n\n"
+        "Perihal: Lamaran Pekerjaan sebagai Junior Data Analyst"
+    )
+    assert english == (
+        "5 October 2026\n\n"
+        "Recruitment Team\nPT Contoh Jaya\nJakarta Selatan, Jakarta Raya\n\n"
+        "Re: Application for Junior Data Analyst"
+    )
 
 
-def test_letter_to_docx_without_closing_keeps_last_block():
-    data = letter_to_docx("Isi surat.\n\nBaris satu\nBaris dua")
+def test_letter_header_without_city_company_or_location():
+    job = MATCH.model_copy(update={"company_name": "Pengiklan Anonim", "location": None})
 
-    document = Document(io.BytesIO(data))
-    assert [p.text for p in document.paragraphs] == ["Isi surat.", "Baris satu\nBaris dua"]
-    assert all(p.paragraph_format.space_before is None for p in document.paragraphs)
+    header = letter_header(job, language="id", city=None, today=date(2026, 1, 31))
+
+    assert header == (
+        "31 Januari 2026\n\nKepada Yth.\nTim Rekrutmen\n\n"
+        "Perihal: Lamaran Pekerjaan sebagai Junior Data Analyst"
+    )
+
+
+def test_letter_to_text_with_header_uses_formal_greeting():
+    letter = CoverLetter(paragraphs=["Satu."])
+
+    text = letter_to_text(letter, company="PT Contoh", name="Nadia", header="HEADER")
+    english = letter_to_text(letter, company="PT Contoh", name="N", language="en", header="H")
+
+    assert text == "HEADER\n\nDengan hormat,\n\nSatu.\n\nHormat saya,\nNadia"
+    assert english.startswith("H\n\nDear PT Contoh Hiring Team,\n\n")
 
 
 def test_anonymous_advertiser_is_not_used_as_company():
@@ -266,6 +266,7 @@ def test_anonymous_advertiser_is_not_used_as_company():
     assert "Pengiklan" not in job_text
     assert text.startswith("Yth. Tim Rekrutmen,\n\n")
     assert letter_file_name(job) == "Surat lamaran - Junior Data Analyst.docx"
+    assert letter_file_name(job, "pdf") == "Surat lamaran - Junior Data Analyst.pdf"
     assert hiring_company("PT  Alpha") == "PT Alpha"
 
 

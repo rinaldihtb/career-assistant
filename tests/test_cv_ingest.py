@@ -43,7 +43,9 @@ def test_valid_pdf_calls_llm_once_and_returns_profile(monkeypatch):
     result = ingest_cv(CV_PDF.read_bytes(), llm=None)
 
     assert result.error is None
-    assert result.profile == profile
+    assert result.profile == profile.model_copy(
+        update={"contacts": ["+62 812-0000-1101", "bima.arditya@example.com"]}
+    )  # kontak dari regex, bukan dari LLM
     assert result.usage.total_tokens == 1100
     assert len(texts) == 1 and "Data Analyst" in texts[0]
     assert (result.pages, result.chars, result.truncated) == (1, len(texts[0]), False)

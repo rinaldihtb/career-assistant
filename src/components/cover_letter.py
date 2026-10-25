@@ -4,8 +4,9 @@ Halaman dibuka dari tombol "Buat surat lamaran" di kartu lowongan; ID lowonganny
 ``st.session_state["cv"]["letter_job"]``. Saat dibuka pertama kali untuk versi profil dan
 lowongan itu, surat dibuat dengan 1 panggilan LLM (``cv.letter``) dan disimpan di
 ``st.session_state["cv"]["letters"][job_id]``. "Buat ulang" memanggil LLM lagi dengan bahasa dan
-panjang yang dipilih. Teks surat bisa diedit; editan disimpan di entri yang sama, dan
-"Unduh .docx" memakai teks yang sudah diedit.
+panjang yang dipilih. Teks surat (tanggal, penerima, perihal, isi, penutup) bisa diedit; editan
+disimpan di entri yang sama. "Unduh .pdf" dan "Unduh .docx" memakai teks yang sudah diedit dan
+baris kontak kop surat, dan baru dibuat saat tombol diklik.
 
 Surat dan profil hanya disimpan di ``st.session_state``. Pesan error LLM tidak di-log dan
 tidak ditampilkan, karena bisa memuat potongan data CV.
@@ -13,6 +14,8 @@ tidak ditampilkan, karena bisa memuat potongan data CV.
 
 import logging
 import os
+from datetime import date
+from functools import partial
 from typing import Any
 
 import streamlit as st
@@ -36,12 +39,14 @@ from cv.letter import (
     LetterSettings,
     generate_cover_letter,
     letter_file_name,
-    letter_to_docx,
+    letter_header,
     letter_to_text,
     signer_name,
     word_count,
 )
+from cv.letter_file import letter_to_docx, letter_to_pdf
 from cv.match import JobMatch
+from cv.profile import CVProfile
 from repositories.job_repository import get_jobs_by_ids
 
 logger = logging.getLogger(__name__)
@@ -49,8 +54,11 @@ logger = logging.getLogger(__name__)
 LETTERS_KEY = "letters"  # di dalam st.session_state["cv"]: {job_id: entri surat}
 LANGUAGE_KEY = "cv_letter_language"
 WORDS_KEY = "cv_letter_words"
+CONTACT_KEY = "letter_contact"  # di dalam st.session_state["cv"]: baris kontak kop surat
+CONTACT_SEPARATOR = "  ·  "
 DEFAULT_SETTINGS = LetterSettings()
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PDF_MIME = "application/pdf"
 TEXT_HEIGHT = 520
 NO_CV = (
     "Belum ada CV aktif. Upload CV di halaman Cocokkan CV, lalu pilih lowongan yang ingin "
@@ -67,8 +75,10 @@ DEPENDENCY_ERROR = (
 LETTER_FAILED = "Surat lamaran gagal dibuat. Klik Buat ulang untuk mencoba lagi."
 LETTER_NOTE = (
     "1 panggilan LLM dari profil CV dan lowongan ini; teks CV tidak dikirim. Skill dan "
-    "pengalaman di surat hanya dari profil. Nama penanda tangan diambil dari CV."
+    "pengalaman di surat hanya dari profil. Nama, kontak, tanggal, penerima, dan perihal "
+    "disusun tanpa LLM."
 )
+CONTACT_HELP = "Baris kecil di bawah nama pada kop surat. Diambil dari CV; bisa diubah."
 NAME_MISSING = f"Nama tidak terbaca dari CV. Ganti {NAME_PLACEHOLDER} di akhir surat."
 
 
@@ -143,7 +153,7 @@ def _render_letter(state: dict[str, Any], match: JobMatch, description: str | No
             key = f"cv_letter_text_{state['version']}_{match.job_id}_{entry['round']}"
             text = st.text_area(
                 "Surat lamaran",
-                value=entry.get("text") or letter_text(entry, match, profile.full_name),
+                value=entry.get("text") or letter_text(entry, match, profile),
                 height=TEXT_HEIGHT,
                 key=key,
                 label_visibility="collapsed",
@@ -170,11 +180,31 @@ def _render_letter(state: dict[str, Any], match: JobMatch, description: str | No
                 format_func=LENGTH_LABELS.get,
                 key=WORDS_KEY,
             )
+            regenerate = st.button("Buat ulang", key="cv_letter_regenerate")
+            contact_key = f"cv_letter_contact_{state['version']}"
+            contact = st.text_input(
+                "Kontak di kop surat",
+                value=state.get(CONTACT_KEY, contact_line(profile)),
+                help=CONTACT_HELP,
+                key=contact_key,
+                on_change=_save_contact,
+                args=(state, contact_key),
+            )
+            file_args = {"author": _author(profile.full_name), "contact": contact}
             with st.container(horizontal=True):
-                regenerate = st.button("Buat ulang", type="primary", key="cv_letter_regenerate")
+                st.download_button(
+                    "Unduh .pdf",
+                    data=partial(letter_to_pdf, text, **file_args) if text else b"",
+                    file_name=letter_file_name(match, "pdf"),
+                    mime=PDF_MIME,
+                    on_click="ignore",
+                    type="primary",
+                    disabled=not text,
+                    key="cv_letter_download_pdf",
+                )
                 st.download_button(
                     "Unduh .docx",
-                    data=letter_to_docx(text, author=_author(profile.full_name)) if text else b"",
+                    data=partial(letter_to_docx, text, **file_args) if text else b"",
                     file_name=letter_file_name(match),
                     mime=DOCX_MIME,
                     on_click="ignore",
@@ -217,6 +247,11 @@ def _save_edit(entry: dict[str, Any], key: str) -> None:
     entry["text"] = st.session_state[key]
 
 
+def _save_contact(state: dict[str, Any], key: str) -> None:
+    """Simpan baris kontak kop surat untuk semua surat di sesi ini."""
+    state[CONTACT_KEY] = st.session_state[key]
+
+
 def _description(job_id: int) -> str | None:
     """Deskripsi lowongan dari database; ``None`` jika gagal (surat tetap bisa dibuat)."""
     try:
@@ -251,14 +286,27 @@ def current_settings(session: Any) -> LetterSettings:
     )
 
 
-def letter_text(entry: dict[str, Any], match: JobMatch, full_name: str | None) -> str:
-    """Teks awal surat dari hasil LLM: salam, isi, penutup, dan nama penanda tangan."""
+def letter_text(
+    entry: dict[str, Any], match: JobMatch, profile: CVProfile, today: date | None = None
+) -> str:
+    """Teks awal surat: header (tanggal, penerima, perihal), salam, isi dari LLM, penutup, nama."""
+    language = entry["settings"].language
+    header = letter_header(
+        match, language=language, city=profile.location, today=today or date.today()
+    )
     return letter_to_text(
         entry["result"].letter,
         company=match.company_name,
-        name=signer_name(full_name),
-        language=entry["settings"].language,
+        name=signer_name(profile.full_name),
+        language=language,
+        header=header,
     )
+
+
+def contact_line(profile: CVProfile) -> str:
+    """Baris kontak awal untuk kop: lokasi profil lalu kontak hasil regex dari CV."""
+    parts = [" ".join((profile.location or "").split()), *profile.contacts]
+    return CONTACT_SEPARATOR.join(part for part in parts if part)
 
 
 def letter_caption(entry: dict[str, Any]) -> str:

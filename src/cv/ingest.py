@@ -14,6 +14,7 @@ from datetime import date
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from cv.contacts import extract_contacts
 from cv.pdf_text import CVRejectedError, extract_cv_text
 from cv.profile import CVProfile, extract_cv_profile
 from models.agent import LLMUsage
@@ -50,6 +51,9 @@ class IngestResult(BaseModel):
 def ingest_cv(data: bytes, *, llm: BaseChatModel, today: date | None = None) -> IngestResult:
     """Validasi PDF, baca teksnya, lalu ekstrak profil dengan tepat satu panggilan LLM.
 
+    Kontak untuk kop surat (``CVProfile.contacts``) diambil dari teks yang sama dengan regex,
+    tanpa LLM.
+
     PDF yang ditolak (bukan PDF, terlalu besar, hasil scan, dll.) berhenti sebelum LLM: 0
     panggilan, 0 biaya.
 
@@ -73,4 +77,5 @@ def ingest_cv(data: bytes, *, llm: BaseChatModel, today: date | None = None) -> 
             "Ekstraksi profil CV gagal (%d halaman, %d karakter)", cv.pages, len(cv.text)
         )
         return IngestResult(usage=result.usage, error=PROFILE_FAILED, reason="profile", **meta)
-    return IngestResult(profile=result.profile, usage=result.usage, **meta)
+    profile = result.profile.model_copy(update={"contacts": extract_contacts(cv.text)})
+    return IngestResult(profile=profile, usage=result.usage, **meta)

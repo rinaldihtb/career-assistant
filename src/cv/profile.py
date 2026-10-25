@@ -62,6 +62,9 @@ class CVProfile(BaseModel):
             tidak mencantumkan pengalaman; ``None`` jika ada pengalaman tetapi tidak ada
             periode yang bisa dihitung.
         experiences: Data mentah dari LLM, disimpan agar hitungan bisa diperiksa.
+        contacts: Telepon, email, LinkedIn, dan GitHub hasil regex dari teks CV
+            (``cv.contacts``), untuk kop surat lamaran. Bukan output LLM dan tidak
+            dikirim ke LLM.
     """
 
     full_name: str | None = None
@@ -72,6 +75,7 @@ class CVProfile(BaseModel):
     skills: list[str] = Field(default_factory=list)
     experience_months: int | None = None
     experiences: list[Experience] = Field(default_factory=list)
+    contacts: list[str] = Field(default_factory=list)
 
     @property
     def experience_label(self) -> str:
