@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from components.job_description import (
+from src.components.job_description import (
     clean_lines,
     description_to_markdown,
     escape_markdown,

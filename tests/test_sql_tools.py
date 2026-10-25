@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from agents.prompts import SQL_SCHEMA_COLUMNS
-from agents.sql_agent import (
+from src.agents.prompts import SQL_SCHEMA_COLUMNS
+from src.agents.sql_agent import (
     SQLExecutionError,
     UnsafeSQLError,
     execute_sql,
@@ -15,7 +15,7 @@ from agents.sql_agent import (
     stem_title_patterns,
     validate_sql,
 )
-from repositories.job_repository import connect_readonly
+from src.repositories.job_repository import connect_readonly
 
 REAL_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
 

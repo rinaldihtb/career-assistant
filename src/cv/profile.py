@@ -21,8 +21,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from agents.prompts import CV_PROFILE_SYSTEM, CV_PROFILE_USER
-from models.agent import LLMUsage
+from src.agents.prompts import CV_PROFILE_SYSTEM, CV_PROFILE_USER
+from src.models.agent import LLMUsage
 
 EducationLevel = Literal["SMA/SMK", "D3", "D4", "S1", "S2", "S3"]
 MAX_SKILLS = 30

@@ -16,9 +16,9 @@ import pytest
 from conftest import RecordingFakeChatModel
 from langchain_core.messages import AIMessage
 
-from agents.prompts import SUPERVISOR_GENERAL_MESSAGE
-from agents.supervisor_agent import SupervisorContext
-from evaluation.checks import (
+from src.agents.prompts import SUPERVISOR_GENERAL_MESSAGE
+from src.agents.supervisor_agent import SupervisorContext
+from src.evaluation.checks import (
     RunOutput,
     check_rag,
     check_sql_ids,
@@ -31,8 +31,8 @@ from evaluation.checks import (
     run_checks,
     split_citations,
 )
-from evaluation.run_eval import load_cases, rescore_record, run_case, summarize
-from models.agent import AgentResult
+from src.evaluation.run_eval import load_cases, rescore_record, run_case, summarize
+from src.models.agent import AgentResult
 
 CASES_PATH = Path(__file__).parent / "eval" / "queries.yaml"
 HELDOUT_PATH = Path(__file__).parent / "eval" / "heldout.yaml"

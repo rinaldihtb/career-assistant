@@ -10,13 +10,13 @@ st.set_page_config(
 )
 
 home_page = st.Page(
-    "pages/home.page.py",
+    "pages/home_page.py",
     title="Beranda",
     icon="🏠",
     default=True,
 )
 job_search_page = st.Page(
-    "pages/jobsearch.page.py",
+    "pages/jobsearch_page.py",
     title="Cari Lowongan",
     icon="🔎",
 )
@@ -28,7 +28,7 @@ cv_match_page = st.Page(
 )
 
 assistant_page = st.Page(
-    "pages/assistant.page.py",
+    "pages/assistant_page.py",
     title="Asisten Karier",
     icon="💬",
 )

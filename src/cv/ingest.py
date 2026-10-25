@@ -15,9 +15,9 @@ from datetime import date
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
-from cv.pdf_text import CVRejectedError, extract_cv_text
-from cv.profile import CVProfile, extract_cv_profile
-from models.agent import LLMUsage
+from src.cv.pdf_text import CVRejectedError, extract_cv_text
+from src.cv.profile import CVProfile, extract_cv_profile
+from src.models.agent import LLMUsage
 
 logger = logging.getLogger(__name__)
 

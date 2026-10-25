@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 from langchain_core.language_models import BaseChatModel
 from langchain_core.vectorstores import VectorStore
 
-from agents.rag_agent import (
+from src.agents.rag_agent import (
     DEFAULT_CANDIDATE_K,
     DEFAULT_SCORE_THRESHOLD,
     retrieve_jobs,
@@ -226,10 +226,10 @@ def run_llm_check(
 
 
 if __name__ == "__main__":
-    from config.database import VECTOR_DB  # import di sini: test tidak butuh koneksi Qdrant
+    from src.config.database import VECTOR_DB  # import di sini: test tidak butuh koneksi Qdrant
 
     if "--llm" in sys.argv:
-        from config.llm import LLM_MODEL
+        from src.config.llm import LLM_MODEL
 
         run_llm_check(VECTOR_DB, LLM_MODEL)
     else:

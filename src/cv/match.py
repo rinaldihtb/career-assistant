@@ -34,10 +34,10 @@ from typing import Any, Literal
 from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel, Field
 
-from agents.rag_agent import MIN_CHUNK_CHARS
-from cv.profile import CVProfile
-from cv.skills import CVSkills, build_cv_skills, match_skills, vocab_in_text
-from repositories.job_repository import get_job_descriptions, get_jobs_by_ids
+from src.agents.rag_agent import MIN_CHUNK_CHARS
+from src.cv.profile import CVProfile
+from src.cv.skills import CVSkills, build_cv_skills, match_skills, vocab_in_text
+from src.repositories.job_repository import get_job_descriptions, get_jobs_by_ids
 
 
 class MatchConfig(BaseModel):

@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from components import assistant_chat
-from components.assistant_chat import (
+from src.components import assistant_chat
+from src.components.assistant_chat import (
     DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
@@ -19,7 +19,7 @@ from components.assistant_chat import (
     prepare_display,
     split_rag_answer,
 )
-from models.agent import AgentResult, LLMCall, LLMUsage
+from src.models.agent import AgentResult, LLMCall, LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
 DEPS = AssistantDependencies(llm="llm", vector_store="store", db_path="db.sqlite")
@@ -61,7 +61,7 @@ SQL_RESULT = AgentResult(
 
 
 def _page():
-    from components.assistant_chat import render_assistant_page
+    from src.components.assistant_chat import render_assistant_page
 
     render_assistant_page()
 

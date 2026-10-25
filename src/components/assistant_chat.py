@@ -16,11 +16,10 @@ from typing import Any
 
 import streamlit as st
 
-from agents.rag_agent import format_salary
-from agents.supervisor_agent import run_supervisor
-from components.job_description import description_to_markdown, escape_markdown
-from models.agent import AgentResult
-from repositories.job_repository import get_jobs_by_ids
+from src.components.job_description import description_to_markdown, escape_markdown
+from src.containers import job_repository, supervisor_agent
+from src.helpers.format import format_salary
+from src.models.agent import AgentResult
 
 logger = logging.getLogger(__name__)
 
@@ -72,45 +71,10 @@ class Display:
     parts: list["Display"] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class AssistantDependencies:
-    """Dependency yang diteruskan ke ``run_supervisor``."""
-
-    llm: Any
-    vector_store: Any
-    db_path: str
-
-
-def load_dependencies() -> AssistantDependencies:
-    """Ambil LLM, vector store, dan path database dari ``config``.
-
-    Import sengaja di dalam fungsi, bukan di atas file: jika ``.env`` belum
-    lengkap, hanya halaman ini yang menampilkan pesan error, halaman lain
-    tetap jalan. Import Python di-cache di ``sys.modules``, jadi klien LLM dan
-    koneksi Qdrant tetap dibuat sekali per proses walaupun Streamlit rerun.
-    """
-    from config.database import VECTOR_DB
-    from config.llm import LLM_MODEL
-
-    return AssistantDependencies(
-        llm=LLM_MODEL,
-        vector_store=VECTOR_DB,
-        db_path=os.getenv("DB_SQLITE_PATH", "./data/database.sqlite"),
-    )
-
-
 def render_assistant_page() -> None:
     """Render halaman chat lengkap: riwayat, contoh pertanyaan, dan input."""
     st.markdown("## Asisten Karier")
     st.caption("Tanyakan lowongan atau statistik lowongan dari data kami.")
-
-    try:
-        deps = load_dependencies()
-    except Exception as exc:  # error konfigurasi bisa KeyError, koneksi Qdrant, dll.
-        logger.exception("Gagal memuat dependency asisten")
-        st.error(DEPENDENCY_ERROR)
-        st.caption(f"Detail: {exc!r}")
-        return
 
     messages: list[dict[str, Any]] = st.session_state.setdefault(MESSAGES_KEY, [])
     for message in messages:
@@ -118,7 +82,7 @@ def render_assistant_page() -> None:
 
     question = st.chat_input("Tanya tentang lowongan...") or st.session_state.pop(PENDING_KEY, None)
     if question:
-        _answer(question, deps, messages)
+        _answer(question, messages)
     elif not messages:
         _render_examples()
 
@@ -130,7 +94,7 @@ def render_assistant_page() -> None:
 # --- Alur tanya-jawab --------------------------------------------------------
 
 
-def _answer(question: str, deps: AssistantDependencies, messages: list[dict[str, Any]]) -> None:
+def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
 
     ``history`` diambil SEBELUM pertanyaan baru ditambahkan, sesuai kontrak
@@ -145,15 +109,10 @@ def _answer(question: str, deps: AssistantDependencies, messages: list[dict[str,
     with st.chat_message("assistant"):
         with st.spinner("Mencari jawaban..."):
             start = time.perf_counter()
-            result = run_supervisor(
-                question,
-                llm=deps.llm,
-                vector_store=deps.vector_store,
-                db_path=deps.db_path,
-                history=history,
-            )
+            state = supervisor_agent.graph.invoke({"messages": [*history, user_message]})
+            result: AgentResult = state["result"]
             seconds = time.perf_counter() - start
-            display = prepare_display(result, deps.db_path)
+            display = prepare_display(result)
         _render_result(result, display, seconds)
     if result.error:
         logger.warning("Agent %s error: %s", result.source, result.error)
@@ -181,6 +140,12 @@ def _clear_messages() -> None:
 # --- Tampilan ----------------------------------------------------------------
 
 
+# def render_result_2(result: dict[str, Any]) -> None:
+#     """Tampilkan jawaban terakhir dari state supervisor agent."""
+#     content = result["messages"][-1].content
+#     st.markdown(content if isinstance(content, str) else str(content))
+
+
 def _render_examples() -> None:
     """Tombol contoh pertanyaan saat riwayat masih kosong."""
     st.markdown("**Contoh pertanyaan:**")
@@ -191,7 +156,7 @@ def _render_examples() -> None:
 def _render_message(message: dict[str, Any]) -> None:
     """Satu bubble chat dari riwayat."""
     with st.chat_message(message["role"]):
-        result: AgentResult | None = message.get("result")
+        result = message.get("result")
         if result is None:
             st.markdown(message["content"])
         else:
@@ -289,7 +254,7 @@ def _render_llm_usage(result: AgentResult, seconds: float | None) -> None:
 # --- Helper tanpa Streamlit (bisa dites langsung) ----------------------------
 
 
-def prepare_display(result: AgentResult, db_path: str) -> Display:
+def prepare_display(result: AgentResult) -> Display:
     """Tentukan teks dan kartu untuk satu jawaban.
 
     - RAG: kartu = ``result.rows`` (lowongan yang dikutip), catatan = alasan per ID
@@ -302,7 +267,7 @@ def prepare_display(result: AgentResult, db_path: str) -> Display:
     - Lainnya: hanya teks.
     """
     if result.parts:
-        return Display("", parts=[prepare_display(part, db_path) for part in result.parts])
+        return Display("", parts=[prepare_display(part) for part in result.parts])
     if not result.job_ids:
         return Display(result.answer)
     intro, notes = split_rag_answer(result.answer)
@@ -317,7 +282,7 @@ def prepare_display(result: AgentResult, db_path: str) -> Display:
     if not cited:
         return Display(result.answer)
     try:
-        jobs = get_jobs_by_ids(db_path, cited)
+        jobs = job_repository.get_jobs_by_ids(cited)
     except Exception:  # kartu hanya pelengkap: jika gagal, jawaban teks tetap tampil
         logger.exception("Gagal mengambil detail lowongan untuk kartu SQL")
         return Display(result.answer)

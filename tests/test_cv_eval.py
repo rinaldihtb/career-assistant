@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
-from cv.match import MatchConfig, load_job_skill_index, rank_jobs
-from cv.pdf_text import extract_cv_text
-from cv.profile import CVProfile, CVProfileResult, Experience
-from cv.skills import build_cv_skills
-from evaluation.run_cv_eval import (
+from src.cv.match import MatchConfig, load_job_skill_index, rank_jobs
+from src.cv.pdf_text import extract_cv_text
+from src.cv.profile import CVProfile, CVProfileResult, Experience
+from src.cv.skills import build_cv_skills
+from src.evaluation.run_cv_eval import (
     AGGREGATIONS,
     CASES_PATH,
     QUERIES,

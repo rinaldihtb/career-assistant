@@ -30,7 +30,7 @@ seed-vector:
 seed-all: clean-data seed-database seed-vector
 
 run:
-	PYTHONPATH=. $(PYTHON) -m streamlit run src/app.py
+	$(PYTHON) -m streamlit run src/app.py
 
 test:
 	$(PYTHON) -m pytest
@@ -39,39 +39,39 @@ lint:
 	$(PYTHON) -m ruff check src/agents src/repositories src/models src/cv src/evaluation tests
 
 sample-sql:
-	PYTHONPATH=.:src $(PYTHON) -m agents.sql_sample
+	$(PYTHON) -m src.agents.sql_sample
 
 sample-sql-llm:
-	PYTHONPATH=.:src $(PYTHON) -m agents.sql_sample --llm
+	$(PYTHON) -m src.agents.sql_sample --llm
 
 sample-rag:
-	PYTHONPATH=.:src $(PYTHON) -m agents.rag_sample
+	$(PYTHON) -m src.agents.rag_sample
 
 sample-rag-llm:
-	PYTHONPATH=.:src $(PYTHON) -m agents.rag_sample --llm
+	$(PYTHON) -m src.agents.rag_sample --llm
 
 sample-supervisor:
-	PYTHONPATH=.:src $(PYTHON) -m agents.supervisor_sample
+	$(PYTHON) -m src.agents.supervisor_sample
 
 supervisor-graph:
-	PYTHONPATH=.:src $(PYTHON) -m agents.supervisor_sample --graph
+	$(PYTHON) -m src.agents.supervisor_sample --graph
 
 .PHONY: eval
 
 eval:
-	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_eval $(ARGS)
+	$(PYTHON) -m src.evaluation.run_eval $(ARGS)
 
 .PHONY: sample-cv
 
 sample-cv:
-	PYTHONPATH=.:src $(PYTHON) -m cv.profile_sample $(ARGS)
+	$(PYTHON) -m src.cv.profile_sample $(ARGS)
 
 .PHONY: sample-match
 
 sample-match:
-	PYTHONPATH=.:src $(PYTHON) -m cv.match_sample $(ARGS)
+	$(PYTHON) -m src.cv.match_sample $(ARGS)
 
 .PHONY: eval-cv
 
 eval-cv:
-	PYTHONPATH=.:src $(PYTHON) -m evaluation.run_cv_eval $(ARGS)
+	$(PYTHON) -m src.evaluation.run_cv_eval $(ARGS)

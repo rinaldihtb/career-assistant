@@ -22,10 +22,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from cv.match import MatchConfig, load_job_skill_index, profile_query_text, rank_jobs
-from cv.pdf_text import CVRejectedError, extract_cv_text
-from cv.profile import extract_cv_profile
-from cv.skills import build_cv_skills
+from src.cv.match import MatchConfig, load_job_skill_index, profile_query_text, rank_jobs
+from src.cv.pdf_text import CVRejectedError, extract_cv_text
+from src.cv.profile import extract_cv_profile
+from src.cv.skills import build_cv_skills
 
 load_dotenv()
 DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
@@ -56,8 +56,8 @@ def main(paths: list[str]) -> int:
     if len(paths) != 1:
         print("Pemakaian: make sample-match ARGS=path/ke/cv.pdf")
         return 2
-    from config.database import VECTOR_DB  # import di sini: test tidak butuh koneksi Qdrant
-    from config.llm import EMBEDDING, LLM_MODEL
+    from src.config.database import VECTOR_DB  # import di sini: test tidak butuh koneksi Qdrant
+    from src.config.llm import EMBEDDING, LLM_MODEL
 
     try:
         cv_text = extract_cv_text(Path(paths[0]).expanduser().read_bytes()).text

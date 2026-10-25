@@ -15,7 +15,7 @@ def render_hero() -> None:
             "memahami kebutuhan role, dan mempersiapkan langkah karier secara lebih terarah."
         )
         if st.button("Jelajahi lowongan", type="primary"):
-            st.switch_page("pages/jobsearch.page.py")
+            st.switch_page("pages/jobsearch_page.py")
 
     with right_column:
         with st.container(border=True):
@@ -24,9 +24,7 @@ def render_hero() -> None:
                 "Cari lowongan, baca detail pekerjaan, dan bandingkan kebutuhan "
                 "role dengan profil Anda."
             )
-            st.caption(
-                "Dibangun untuk membantu pencari kerja membuat keputusan yang lebih jelas."
-            )
+            st.caption("Dibangun untuk membantu pencari kerja membuat keputusan yang lebih jelas.")
 
 
 def render_feature_cards() -> None:

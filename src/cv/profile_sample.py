@@ -11,8 +11,8 @@ import sys
 import time
 from pathlib import Path
 
-from cv.pdf_text import CVRejectedError, extract_cv_text
-from cv.profile import extract_cv_profile
+from src.cv.pdf_text import CVRejectedError, extract_cv_text
+from src.cv.profile import extract_cv_profile
 
 
 def main(paths: list[str]) -> int:
@@ -20,7 +20,7 @@ def main(paths: list[str]) -> int:
     if not paths:
         print("Pemakaian: make sample-cv ARGS=path/ke/cv.pdf")
         return 2
-    from config.llm import LLM_MODEL
+    from src.config.llm import LLM_MODEL
 
     for path in paths:
         print(f"\n=== {path}")

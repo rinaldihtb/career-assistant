@@ -6,7 +6,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from config.database import VECTOR_DB
+from src.config.database import VECTOR_DB
 
 load_dotenv()
 

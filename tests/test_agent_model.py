@@ -2,7 +2,7 @@
 
 from langchain_core.messages import AIMessage
 
-from models.agent import LLMUsage
+from src.models.agent import LLMUsage
 
 
 def test_add_records_step_model_and_tokens():

@@ -6,10 +6,10 @@ LLM dipalsukan dengan mengganti ``extract_cv_profile``; PDF memakai CV fiktif se
 import logging
 from pathlib import Path
 
-from cv import ingest as ingest_module
-from cv.ingest import PROFILE_FAILED, ingest_cv
-from cv.profile import CVProfile, CVProfileResult
-from models.agent import LLMUsage
+from src.cv import ingest as ingest_module
+from src.cv.ingest import PROFILE_FAILED, ingest_cv
+from src.cv.profile import CVProfile, CVProfileResult
+from src.models.agent import LLMUsage
 
 CV_PDF = Path("tests/eval/cv/cv01_data_analyst.pdf")
 

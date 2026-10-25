@@ -4,8 +4,8 @@ import re
 
 import pytest
 
-from cv import skills
-from cv.skills import (
+from src.cv import skills
+from src.cv.skills import (
     SKILL_VOCAB,
     build_cv_skills,
     match_skills,
