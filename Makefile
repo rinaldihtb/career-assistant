@@ -75,3 +75,8 @@ sample-match:
 
 eval-cv:
 	$(PYTHON) -m src.evaluation.run_cv_eval $(ARGS)
+
+.PHONY: sample-plan
+
+sample-plan:
+	$(PYTHON) -m src.cv.plan_sample $(ARGS)

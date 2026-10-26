@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from src.cv.contacts import extract_contacts
-from src.cv.match import profile_query_text
+from src.cv.gap import compute_skill_gap
+from src.cv.match import JobMatch, profile_query_text
 from src.cv.pdf_text import extract_cv_text
+from src.cv.plan import plan_prompt_input
 from src.cv.profile import CVProfile
 
 CV_DIR = Path("tests/eval/cv")
@@ -46,8 +48,9 @@ def test_contacts_of_eval_cvs_are_phone_then_email():
 def test_contacts_never_reach_model_inputs():
     contacts = ["0812-3456-7890", "rahasia@mail.com", "linkedin.com/in/rahasia"]
     profile = CVProfile(target_role="Data Analyst", skills=["SQL"], contacts=contacts)
+    job = JobMatch(job_id=1, job_title="Data Analyst", score=0.5, semantic=0.5, semantic_scaled=0.5)
 
-    prompts = [profile_query_text(profile)]
+    prompts = [profile_query_text(profile), *plan_prompt_input(profile, compute_skill_gap([job]))]
 
     for contact in contacts:
         assert not any(contact in prompt for prompt in prompts)
