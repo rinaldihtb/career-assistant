@@ -146,7 +146,7 @@ def _markdown(app: AppTest) -> list[str]:
     return [element.value for element in app.markdown]
 
 
-# --- 02a: upload --------------------------------------------------------------
+# --- Upload -------------------------------------------------------------------
 
 
 def test_empty_page_waits_for_file_and_consent(calls):
@@ -205,10 +205,10 @@ def test_missing_config_shows_error_on_read(calls, monkeypatch):
     assert calls["ingest"] == []
 
 
-# --- 02b: hasil dan koreksi --------------------------------------------------
+# --- Hasil dan koreksi -------------------------------------------------------
 
 
-def test_result_cards_show_score_skills_detail_and_disabled_letter(calls):
+def test_result_cards_show_score_skills_detail_and_letter_button(calls):
     app = _app(state())
 
     assert not app.exception
@@ -218,7 +218,7 @@ def test_result_cards_show_score_skills_detail_and_disabled_letter(calls):
     ) in markdown
     assert "Skill kurang: :orange-badge[Power BI]" in markdown
     assert any("tidak menyebut skill spesifik" in line for line in markdown)
-    assert app.button(key="cv_letter_1").disabled
+    assert not app.button(key="cv_letter_1").disabled
     assert app.expander[0].label == "Lihat detail lowongan"
     assert any("Analisis data penjualan" in line for line in markdown)  # deskripsi job 1
     assert usage_caption(state()) in [caption.value for caption in app.caption]

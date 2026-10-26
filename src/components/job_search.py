@@ -6,8 +6,8 @@ terpilih, yaitu skill yang diminta (kosakata ``src.cv.skills``) dan deskripsi ya
 (``src.components.job_description``).
 
 Dengan CV aktif, skill cocok dan kurang dihitung untuk lowongan apa pun (pencocokan kata, sama
-dengan Cocokkan CV). Skor hanya untuk lowongan di hasil Cocokkan CV, karena skor butuh kemiripan
-profil dari Qdrant.
+dengan Cocokkan CV). Skor dan tombol surat lamaran hanya untuk lowongan di hasil Cocokkan CV:
+skor butuh kemiripan profil dari Qdrant, dan halaman surat memakai hasil pencocokan itu.
 """
 
 import logging
@@ -16,7 +16,8 @@ from typing import Any
 
 import streamlit as st
 
-from src.components.cv_match import skill_chips, skill_lines
+from src.components.cover_letter import find_match
+from src.components.cv_match import LETTER_JOB_KEY, LETTER_PAGE, skill_chips, skill_lines
 from src.components.job_description import description_to_markdown, escape_markdown
 from src.components.navigation import CV_PAGE
 from src.containers import get_job_repository
@@ -55,6 +56,9 @@ SKILL_SOURCE = "Dicocokkan dari kosakata skill di deskripsi, tanpa LLM."
 NOT_IN_MATCHES = (
     "Lowongan ini tidak masuk 10 lowongan paling cocok untuk profilmu, jadi skornya tidak "
     "dihitung. Skill di atas dicocokkan dengan kata, tanpa LLM."
+)
+LETTER_DISABLED_HELP = (
+    "Surat lamaran tersedia untuk lowongan di hasil Cocokkan CV (10 lowongan paling cocok)."
 )
 
 
@@ -166,7 +170,7 @@ def _render_card(job: JobListing, *, selected: bool, state: dict[str, Any]) -> N
 
 
 def _render_detail(job: JobListing, repository: JobRepository) -> None:
-    """Judul, badge, kecocokan CV atau skill yang diminta, dan deskripsi."""
+    """Judul, badge, kecocokan CV atau skill yang diminta, tombol, dan deskripsi."""
     st.markdown(f"### {escape_markdown(job.job_title)}")
     location = " ".join((job.location or "").splitlines()[0].split()) if job.location else ""
     st.caption(escape_markdown(" · ".join(p for p in (job.company_name, location) if p)))
@@ -176,22 +180,47 @@ def _render_detail(job: JobListing, repository: JobRepository) -> None:
     description = _description(job.id, repository)
     index = _skill_index(_db_path())
     if cv_state is None:
-        if st.button("Cek kecocokan dengan CV", key=f"job_fit_{job.id}", type="primary"):
-            st.switch_page(CV_PAGE)
+        _render_actions_without_cv(job)
         st.divider()
         st.markdown("**Skill yang diminta**")
         st.caption(SKILL_SOURCE)
         skills = required_skills(job.id, index)
         st.markdown(skill_chips(skills, "gray", MAX_SKILL_CHIPS) if skills else NO_SKILLS)
     else:
+        match = find_match(cv_state, job.id)
+        _render_letter_action(cv_state, job, match)
         st.divider()
-        _render_fit(cv_state, job, find_match(cv_state, job.id), description, index)
+        _render_fit(cv_state, job, match, description, index)
 
     st.divider()
     if description:
         st.markdown(description_to_markdown(description))
     else:
         st.caption("Deskripsi tidak tersedia.")
+
+
+def _render_actions_without_cv(job: JobListing) -> None:
+    """Tanpa CV, kedua tombol membuka Cocokkan CV."""
+    with st.container(horizontal=True):
+        if st.button("Cek kecocokan dengan CV", key=f"job_fit_{job.id}", type="primary"):
+            st.switch_page(CV_PAGE)
+        if st.button("Buat surat lamaran", key=f"job_letter_{job.id}"):
+            st.switch_page(CV_PAGE)
+
+
+def _render_letter_action(
+    cv_state: dict[str, Any], job: JobListing, match: JobMatch | None
+) -> None:
+    """Tombol surat lamaran: aktif hanya untuk lowongan di hasil Cocokkan CV."""
+    if st.button(
+        "Buat surat lamaran",
+        key=f"job_letter_{job.id}",
+        type="primary",
+        disabled=match is None,
+        help=None if match else LETTER_DISABLED_HELP,
+    ):
+        cv_state[LETTER_JOB_KEY] = job.id
+        st.switch_page(LETTER_PAGE)
 
 
 def _render_fit(
@@ -250,11 +279,6 @@ def _db_path() -> str:
 
 
 # --- Helper tanpa Streamlit (bisa dites langsung) -------------------------------
-
-
-def find_match(cv_state: dict[str, Any], job_id: int) -> JobMatch | None:
-    """Lowongan ``job_id`` di hasil Cocokkan CV untuk profil saat ini; ``None`` jika tidak ada."""
-    return next((match for match in cv_state["matches"].matches if match.job_id == job_id), None)
 
 
 def short_salary(salary_min: int | None, salary_max: int | None) -> str:

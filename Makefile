@@ -80,3 +80,8 @@ eval-cv:
 
 sample-plan:
 	$(PYTHON) -m src.cv.plan_sample $(ARGS)
+
+.PHONY: sample-letter
+
+sample-letter:
+	$(PYTHON) -m src.cv.letter_sample $(ARGS)

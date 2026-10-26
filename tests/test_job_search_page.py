@@ -13,6 +13,7 @@ from src.components import job_search
 from src.components.job_search import (
     DB_ERROR,
     KEYWORD_KEY,
+    LETTER_DISABLED_HELP,
     MODE_KEY,
     NO_RESULTS,
     NOT_IN_MATCHES,
@@ -181,31 +182,35 @@ def test_database_error_is_shown(monkeypatch):
 # --- Detail dengan dan tanpa CV -----------------------------------------------
 
 
-def test_without_cv_shows_required_skills_and_cv_button():
+def test_without_cv_shows_required_skills_and_cv_buttons():
     app = _app()
 
     assert "**Skill yang diminta**" in _markdown(app)
     assert any(
         ":gray-badge[Python]" in text and ":gray-badge[SQL]" in text for text in _markdown(app)
     )
+    assert not app.button(key="job_letter_1").disabled
     assert app.button(key="job_fit_1").label == "Cek kecocokan dengan CV"
 
 
-def test_with_cv_job_in_matches_shows_score():
+def test_with_cv_job_in_matches_shows_score_and_enables_letter():
     app = _app(cv_state())
 
     assert "#### 83%" in _markdown(app)
+    assert not app.button(key="job_letter_1").disabled
     assert "**Skill yang diminta**" not in _markdown(app)
-    assert not any((button.key or "") == "job_fit_1" for button in app.button)
 
 
-def test_with_cv_other_job_shows_word_match():
+def test_with_cv_other_job_shows_word_match_and_disables_letter():
     app = _app(cv_state())
     app.button(key="job_pick_5").click().run()
 
     assert "Skill cocok: belum ada" in _markdown(app)
     assert "Skill kurang: :orange-badge[Python] :orange-badge[REST API]" in _markdown(app)
     assert NOT_IN_MATCHES in _captions(app)
+    letter = app.button(key="job_letter_5")
+    assert letter.disabled
+    assert letter.help == LETTER_DISABLED_HELP
 
 
 def test_page_is_registered_and_fit_button_opens_cv_match():

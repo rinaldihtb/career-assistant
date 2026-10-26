@@ -1,16 +1,14 @@
-"""Halaman Cocokkan CV (Figma 02a kosong, 02b hasil).
+"""Halaman Cocokkan CV: upload PDF, profil terbaca, dan lowongan paling cocok.
 
-Alur:
-1. Kosong (02a): upload PDF dan centang persetujuan, baru tombol "Baca CV & cocokkan" aktif.
-   Klik: ``ingest_cv`` (1 LLM) lalu ``match_jobs`` (1 embedding, 0 LLM); hasilnya ditulis
-   sekali ke ``st.session_state["cv"]`` = {profile, version, matches, ...}.
-2. Hasil (02b): profil terbaca bisa dikoreksi. "Cocokkan ulang" menaikkan ``version``;
-   embedding ulang hanya jika teks profil yang di-embed berubah (koreksi lokasi tidak).
-3. "Ganti" mengosongkan state dan uploader.
+Tanpa CV aktif: uploader, checkbox persetujuan, dan tombol "Baca CV & cocokkan" yang aktif
+hanya jika keduanya terpenuhi. Tombol menjalankan ``ingest_cv`` (1 LLM) lalu ``match_jobs``
+(1 embedding, 0 LLM) dan menulis hasilnya sekali ke ``st.session_state["cv"]``.
 
-CV dan profil hanya di ``st.session_state`` (memori sesi), tidak ditulis ke disk atau log.
-Preferensi singkat di Figma 02a (posisi, lokasi, tipe kerja) belum diterapkan: ``match_jobs``
-belum memakai filter itu dan efeknya belum diukur di set eval Cocokkan CV.
+Dengan CV aktif: profil bisa dikoreksi. "Cocokkan ulang" menaikkan ``version`` dan meng-embed
+ulang hanya jika teks profil yang di-embed berubah (koreksi lokasi tidak). "Ganti"
+mengosongkan state dan uploader.
+
+CV dan profil hanya disimpan di ``st.session_state``, tidak di disk atau log.
 """
 
 import logging
@@ -31,6 +29,8 @@ from src.repositories.job_repository import get_jobs_by_ids
 logger = logging.getLogger(__name__)
 
 PAGE_TITLE = "## Cocokkan CV dengan lowongan"
+LETTER_PAGE = "pages/letter_page.py"
+LETTER_JOB_KEY = "letter_job"  # di dalam st.session_state["cv"]: ID lowongan untuk surat
 UPLOADER_ROUND_KEY = "cv_uploader_round"  # dinaikkan saat "Ganti" agar uploader kosong lagi
 CONSENT_KEY = "cv_consent"
 CONSENT_TEXT = (
@@ -116,7 +116,7 @@ def render_cv_match_page() -> None:
 
 
 def _render_upload() -> None:
-    """02a: uploader, persetujuan, dan tombol yang aktif hanya jika keduanya terpenuhi."""
+    """Uploader, persetujuan, dan tombol yang aktif hanya jika keduanya terpenuhi."""
     round_ = st.session_state.get(UPLOADER_ROUND_KEY, 0)
     uploaded = st.file_uploader(
         "CV (PDF)",
@@ -138,7 +138,7 @@ def _render_upload() -> None:
 
 
 def _ingest_and_match(uploaded: Any) -> None:
-    """Baca CV (1 LLM), cocokkan (1 embedding), simpan state sekali, lalu rerun ke 02b."""
+    """Baca CV (1 LLM), cocokkan (1 embedding), simpan state sekali, lalu rerun."""
     deps = _dependencies()
     if deps is None:
         return
@@ -156,16 +156,16 @@ def _ingest_and_match(uploaded: Any) -> None:
 
 
 def _render_profile_panel(state: dict[str, Any]) -> None:
-    """02b kiri: kartu file, form koreksi profil, dan "Cocokkan ulang"."""
+    """Panel kiri: kartu file, form koreksi profil, dan "Cocokkan ulang"."""
     profile: CVProfile = state["profile"]
     version = state["version"]
-    with st.container(border=True):
-        name_column, button_column = st.columns([4, 1], vertical_alignment="center")
-        name_column.markdown(f"**{escape_markdown(state['file_name'])}**")
-        name_column.caption(
-            f"{size_label(state['file_size'])} · {state['pages']} halaman · terbaca"
-        )
-        button_column.button("Ganti", on_click=reset_cv, key="cv_replace")
+    # Baris horizontal, bukan st.columns: tombol selebar isinya. Dengan kolom [4, 1] tombol
+    # "Ganti" terpotong menjadi "G..." di layar laptop 1000 px (panel kiri hanya 2/5 lebar).
+    with st.container(border=True, horizontal=True, vertical_alignment="center"):
+        with st.container():
+            st.markdown(f"**{escape_markdown(state['file_name'])}**")
+            st.caption(f"{size_label(state['file_size'])} · {state['pages']} halaman · terbaca")
+        st.button("Ganti", on_click=reset_cv, key="cv_replace")
 
     # Key memakai version: setelah koreksi diterapkan, widget dibuat ulang dari profil baru.
     with st.form("cv_profile_form"):
@@ -255,7 +255,7 @@ def reset_cv() -> None:
 
 
 def _render_results(state: dict[str, Any]) -> None:
-    """02b kanan: kartu lowongan urut skor."""
+    """Panel kanan: kartu lowongan urut skor."""
     result: MatchResult = state["matches"]
     if result.error:
         st.warning(MATCH_FAILED)
@@ -269,12 +269,14 @@ def _render_results(state: dict[str, Any]) -> None:
 
 
 def _render_match_card(match: JobMatch, description: str | None) -> None:
-    """Kartu: judul, meta, skor, chip skill, detail, dan tombol surat (nonaktif)."""
+    """Kartu: judul, meta, skor, chip skill, detail, dan tombol ke halaman surat lamaran."""
     with st.container(border=True):
-        info_column, score_column = st.columns([4, 1])
-        info_column.markdown(f"**{escape_markdown(match.job_title)}**")
-        info_column.caption(escape_markdown(match_meta(match)))
-        score_column.markdown(f"### {match.score:.0%}")
+        # Horizontal agar skor selebar isinya; kolom [4, 1] mematahkan "83%" di layar 1000 px.
+        with st.container(horizontal=True):
+            with st.container():
+                st.markdown(f"**{escape_markdown(match.job_title)}**")
+                st.caption(escape_markdown(match_meta(match)))
+            st.markdown(f"### {match.score:.0%}", width="content")
         st.progress(min(1.0, max(0.0, match.score)))
         for line in skill_lines(match):
             st.markdown(line)
@@ -283,12 +285,13 @@ def _render_match_card(match: JobMatch, description: str | None) -> None:
                 st.markdown(description_to_markdown(description))
             else:
                 st.caption("Deskripsi tidak tersedia.")
-        st.button(
+        if st.button(
             "Buat surat lamaran",
             key=f"cv_letter_{match.job_id}",
-            disabled=True,
-            help="Segera hadir: surat lamaran dari profil CV dan lowongan ini.",
-        )
+            help="Surat lamaran untuk lowongan ini dari profil CV (1 panggilan LLM).",
+        ):
+            st.session_state[CV_STATE_KEY][LETTER_JOB_KEY] = match.job_id
+            st.switch_page(LETTER_PAGE)
 
 
 # --- Dependency dan data -------------------------------------------------------
