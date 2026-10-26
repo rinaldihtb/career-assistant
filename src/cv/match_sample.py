@@ -8,7 +8,7 @@ tidak dicetak dan tidak ada yang ditulis ke disk.
 
 Yang diukur per konfigurasi:
 - Proxy relevansi: berapa dari top-10 yang judulnya data/AI/software (``TITLE_PROXY``,
-  85 dari 473 lowongan). Hanya cocok untuk CV data/AI; set eval C1d memakai gold per CV.
+  85 dari 473 lowongan). Hanya cocok untuk CV data/AI; ``make eval-cv`` memakai gold per CV.
 - Distribusi cosine semua lowongan kandidat (maks, p90, p50) untuk menentukan
   ``semantic_floor`` dan ``semantic_ceiling``.
 - Kestabilan terhadap ``k``: top-10 default dengan k=800 harus sama dengan k=400.

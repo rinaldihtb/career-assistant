@@ -1,8 +1,8 @@
 """Set eval Cocokkan CV (tests/eval/cv_cases.yaml): pilih MatchConfig dengan gold per CV.
 
-    make eval-cv ARGS="--label c1d"       semua CV fiktif (butuh .env)
+    make eval-cv ARGS="--label nama"      semua CV fiktif (butuh .env)
     make eval-cv ARGS="--only cv01"       sebagian CV (prefix ID)
-    make eval-cv ARGS="--rescore tests/eval/results/cv-c1d-20261021-2000.json"
+    make eval-cv ARGS="--rescore tests/eval/results/<file>.json"
                                           hitung ulang dari kandidat tersimpan, tanpa API
 
 Biaya per CV: 1 panggilan LLM (profil), 2 embedding (ringkasan profil dan teks CV), 2 query
@@ -11,8 +11,9 @@ yang tersimpan, jadi menambah konfigurasi atau mengoreksi gold tidak menambah bi
 
 Alur per CV:
 1. ``extract_cv_text`` -> ``extract_cv_profile`` -> nilai profil terhadap gold (recall skill,
-   skill yang dikarang, jenjang pendidikan, jumlah pengalaman).
-2. Per vektor query: SEMUA lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta
+   skill yang dikarang, jenjang pendidikan, jumlah pengalaman) dan cek kutipan pencapaian
+   terhadap teks CV (tanpa gold).
+2. Per vektor query: semua lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta
    jumlah skill cocok/disebut. Yang disimpan hanya angka, ID, dan profil (CV-nya fiktif);
    teks CV tidak disimpan.
 
@@ -38,6 +39,7 @@ import re
 import statistics
 import subprocess
 import time
+import unicodedata
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import UTC, datetime
@@ -59,7 +61,7 @@ from src.cv.match import (
     skill_score,
 )
 from src.cv.pdf_text import CVRejectedError, extract_cv_text
-from src.cv.profile import CVProfile, extract_cv_profile
+from src.cv.profile import Achievement, CVProfile, extract_cv_profile
 from src.cv.skills import CVSkills, build_cv_skills, match_skills
 from src.repositories.job_repository import connect_readonly
 
@@ -79,7 +81,7 @@ SKILL_PRIORS = (0.0, 1.0, 2.0, 3.0)
 SEMANTIC_WEIGHTS = (0.4, 0.5, 0.6, 0.7, 0.8)
 REFERENCE_WEIGHT = 1.0  # semantik saja: pembanding, tidak ikut dipilih
 CALIBRATION_STEP = 0.05
-TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu 02b
+TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu hasil
 DEFAULT = MatchConfig()
 CONFIG_FIELDS = {
     "query",
@@ -186,6 +188,55 @@ def check_skills(
     }
 
 
+# Tanda hubung dan kutip tipografis di CV diseragamkan dengan versi ASCII yang biasa ditulis LLM.
+_PUNCTUATION = str.maketrans(
+    {"\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+     "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'}
+)  # fmt: skip
+_BULLETS = frozenset("•▪●◦‣∙·")
+_CONTEXT_PARTS = re.compile(r"\s+[-|]\s+|,\s*")
+
+
+def squash(text: str) -> str:
+    """Bentuk pembanding kutipan: NFKC, huruf kecil, tanda baca diseragamkan, tanpa spasi dan
+    simbol bullet.
+
+    Spasi dibuang seluruhnya karena teks pypdf memotong kalimat per baris dan judul bagian
+    template Canva ditulis satu huruf per baris.
+    """
+    text = unicodedata.normalize("NFKC", text).casefold().translate(_PUNCTUATION)
+    return "".join(
+        ch
+        for ch in text
+        if not ch.isspace() and ch not in _BULLETS and unicodedata.category(ch) != "Co"
+    )
+
+
+def check_achievements(achievements: Sequence[Achievement], cv_text: str) -> dict[str, Any]:
+    """Cek pencapaian hasil LLM terhadap teks CV (aturan 8 ``CV_PROFILE_SYSTEM``).
+
+    Returns:
+        ``count``, ``numeric`` (kutipan yang memuat angka), ``not_verbatim`` (kutipan yang tidak
+        ada di teks CV setelah ``squash``: diterjemahkan, diringkas, atau dikarang), dan
+        ``context_unknown`` (jumlah ``context`` yang salah satu bagiannya, dipisah koma atau
+        " - ", tidak ada di teks CV).
+    """
+    text = squash(cv_text)
+    not_verbatim = [item.text for item in achievements if squash(item.text) not in text]
+    context_unknown = sum(
+        1
+        for item in achievements
+        if item.context
+        and any(squash(part) not in text for part in _CONTEXT_PARTS.split(item.context) if part)
+    )
+    return {
+        "count": len(achievements),
+        "numeric": sum(1 for item in achievements if re.search(r"\d", item.text)),
+        "not_verbatim": not_verbatim,
+        "context_unknown": context_unknown,
+    }
+
+
 def check_profile(profile: CVProfile, expected: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Jenjang pendidikan dan jumlah pengalaman: nilai harapan dan hasil ekstraksi."""
     return {
@@ -288,13 +339,13 @@ def calibrate(
 ) -> tuple[float, float]:
     """Batas kalibrasi semantik dari distribusi cosine semua CV, kelipatan ``step``.
 
-    floor: median cosine kandidat TERENDAH di antara CV, dibulatkan ke bawah. Untuk setiap CV,
+    floor: median cosine kandidat terendah di antara CV, dibulatkan ke bawah. Untuk setiap CV,
     setidaknya separuh lowongan kandidatnya mendapat skor semantik di atas 0%.
-    ceiling: cosine teratas TERTINGGI di antara CV, dibulatkan ke bawah. Lowongan terbaik CV
+    ceiling: cosine teratas tertinggi di antara CV, dibulatkan ke bawah. Lowongan terbaik CV
     yang paling cocok mendapat skor semantik sekitar 100%.
 
     Kelipatan 0,05 karena 5 CV tidak cukup untuk presisi 0,01. Aturan pertama (median gabungan
-    dan maksimum, presisi 0,01) pada run cv-c1d-20261021-2130 memberi [0.50, 0.71] dan skor
+    dan maksimum, presisi 0,01) pada set eval memberi [0.50, 0.71] dan skor
     teratas cv04 66%, di luar 70-90%; aturan ini memberi [0.45, 0.70] dan 71-89% dengan
     precision@5 dan @10 yang sama (1.00).
     """
@@ -464,6 +515,10 @@ def analyze(
         if checked
         else None,
         "skills_invented": sum(len(r["skills_check"]["invented"]) for r in checked),
+        "achievements": sum(r.get("achievements_check", {}).get("count", 0) for r in checked),
+        "achievements_not_verbatim": sum(
+            len(r.get("achievements_check", {}).get("not_verbatim", ())) for r in checked
+        ),
         "profile_fields_ok": sum(
             item["expected"] == item["actual"]
             for r in checked
@@ -481,6 +536,7 @@ def score_record(
     profile = CVProfile.model_validate(record["profile"])
     record["skills_check"] = check_skills(profile.skills, case["profile"]["skills"], cv_text)
     record["profile_check"] = check_profile(profile, case["profile"])
+    record["achievements_check"] = check_achievements(profile.achievements, cv_text)
     record["gold_ids"] = gold_job_ids(case, titles)
     record["not_relevant_ids"] = sorted(case.get("not_relevant_ids") or ())
     record["gold_count_expected"] = case.get("gold_count")
@@ -518,7 +574,8 @@ def run_case(
         record["error"] = f"Profil gagal: {result.error}"
         return record, cv.text
     profile = result.profile
-    record["profile"] = profile.model_dump(mode="json")
+    # Nama dan kontak tidak dinilai eval, jadi tidak ditulis ke JSON hasil.
+    record["profile"] = profile.model_dump(mode="json", exclude={"full_name", "contacts"})
 
     texts = {"profile": profile_query_text(profile), "cv_text": cv.text}
     record["query_chars"] = {name: len(text) for name, text in texts.items()}
@@ -610,6 +667,13 @@ def print_record(record: Mapping[str, Any]) -> None:
         f"{'ok' if exp['actual'] == exp['expected'] else 'SALAH'} | "
         f"gold {len(record['gold_ids'])} | kandidat {sizes or '-'}"
     )
+    achieved = record.get("achievements_check")
+    if achieved:
+        print(
+            f"      pencapaian {achieved['count']} (berangka {achieved['numeric']}, "
+            f"tidak persis {len(achieved['not_verbatim'])}, "
+            f"konteks tidak ditemukan {achieved['context_unknown']})"
+        )
     if record["gold_count_expected"] not in (None, len(record["gold_ids"])):
         print(
             f"      PERINGATAN gold berubah: {record['gold_count_expected']} -> "
@@ -631,7 +695,9 @@ def print_summary(summary: Mapping[str, Any]) -> None:
     print(
         f"CV dinilai {summary['cases_scored']}/{summary['cases']} | recall skill rata-rata "
         f"{summary['skill_recall_mean']} | skill dikarang {summary['skills_invented']} | "
-        f"field profil benar {summary['profile_fields_ok']}/{summary['profile_fields']}"
+        f"field profil benar {summary['profile_fields_ok']}/{summary['profile_fields']} | "
+        f"pencapaian {summary.get('achievements', 0)} "
+        f"(tidak persis {summary.get('achievements_not_verbatim', 0)})"
     )
     print(
         "\nKalibrasi (floor = median kandidat terendah antar-CV, ceiling = cosine teratas "
@@ -687,7 +753,7 @@ def save_results(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Eval Cocokkan CV.")
-    parser.add_argument("--label", default="run", help="Nama hasil, mis. c1d.")
+    parser.add_argument("--label", default="run", help="Nama hasil, mis. baseline.")
     parser.add_argument("--only", nargs="*", default=[], help="Prefix ID CV, mis. cv01.")
     parser.add_argument("--cases", type=Path, default=CASES_PATH)
     parser.add_argument("--out", type=Path, default=RESULTS_DIR)

@@ -1,11 +1,10 @@
 """Satu pintu masuk CV: PDF -> teks -> profil (1 panggilan LLM).
 
-Dipakai halaman Cocokkan CV (``st.file_uploader``) dan nanti Asisten Karier
-(``st.chat_input(accept_file=True)``), supaya validasi, ekstraksi, dan pesan error sama di
-kedua tempat. Persetujuan pengguna dicek UI SEBELUM fungsi ini dipanggil.
+Semua tempat upload CV memakai fungsi ini, sehingga validasi, ekstraksi, dan pesan error
+sama. Persetujuan pengguna dicek UI sebelum fungsi ini dipanggil.
 
-Privasi: teks CV hanya hidup selama pemanggilan. Yang dikembalikan hanya profil (disimpan
-pemanggil di ``st.session_state``) dan angka. Log tidak memuat teks CV maupun pesan error
+Teks CV hanya hidup selama pemanggilan. Yang dikembalikan hanya profil (disimpan pemanggil
+di ``st.session_state``) dan angka. Log tidak memuat teks CV maupun pesan error
 LLM, karena pesan "output tidak valid" bisa berisi potongan output model, yaitu data CV.
 """
 
@@ -15,6 +14,7 @@ from datetime import date
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from src.cv.contacts import extract_contacts
 from src.cv.pdf_text import CVRejectedError, extract_cv_text
 from src.cv.profile import CVProfile, extract_cv_profile
 from src.models.agent import LLMUsage
@@ -51,6 +51,9 @@ class IngestResult(BaseModel):
 def ingest_cv(data: bytes, *, llm: BaseChatModel, today: date | None = None) -> IngestResult:
     """Validasi PDF, baca teksnya, lalu ekstrak profil dengan tepat satu panggilan LLM.
 
+    Kontak untuk kop surat (``CVProfile.contacts``) diambil dari teks yang sama dengan regex,
+    tanpa LLM.
+
     PDF yang ditolak (bukan PDF, terlalu besar, hasil scan, dll.) berhenti sebelum LLM: 0
     panggilan, 0 biaya.
 
@@ -74,4 +77,5 @@ def ingest_cv(data: bytes, *, llm: BaseChatModel, today: date | None = None) -> 
             "Ekstraksi profil CV gagal (%d halaman, %d karakter)", cv.pages, len(cv.text)
         )
         return IngestResult(usage=result.usage, error=PROFILE_FAILED, reason="profile", **meta)
-    return IngestResult(profile=result.profile, usage=result.usage, **meta)
+    profile = result.profile.model_copy(update={"contacts": extract_contacts(cv.text)})
+    return IngestResult(profile=profile, usage=result.usage, **meta)

@@ -3,25 +3,24 @@
 Alur ``match_jobs``:
 1. Teks query: ringkasan profil (default) atau teks CV mentah; di-embed sekali.
 2. Qdrant: ``k`` chunk terdekat dari seluruh koleksi, lalu skor diagregasi per ``job_id``.
-3. Skor semantik dikalibrasi ke 0..1 dengan batas TETAP (``semantic_floor``/``ceiling``),
+3. Skor semantik dikalibrasi ke 0..1 dengan batas tetap (``semantic_floor``/``ceiling``),
    bukan min-max per query, supaya persentase tidak bergeser setiap "Cocokkan ulang".
 4. Skor skill dari ``cv.skills`` (regex, kosakata yang di-cache per proses):
    ``cocok / (disebut + skill_prior)``. Tanpa ``skill_prior``, lowongan yang hanya menyebut
-   satu skill umum mendapat 100% jika skill itu ada di CV. Terukur pada CV asli: 5 lowongan
-   sales/brand masuk top-10 karena "English" atau "Market Research" saja (1/1), sementara
-   85 lowongan data/AI/software tersedia. 71 dari 473 lowongan hanya menyebut 1 skill.
+   satu skill umum (71 dari 473 lowongan) mendapat 100% jika skill itu ada di CV, sehingga
+   lowongan sales masuk top-10 CV data hanya karena "English".
 5. Skor akhir = ``w * semantik + (1 - w) * skor skill``. Lowongan yang tidak menyebut skill
    kosakata mendapat skor skill 0 (rumus yang sama, tanpa kasus khusus).
 
-Kenapa ringkasan profil sebagai default: profil bisa dikoreksi pengguna di UI, dan
-"Cocokkan ulang" hanya bermakna jika koreksi itu ikut di-embed. Ringkasan juga tidak
-memuat nama atau kontak. Teks CV mentah tetap tersedia (``query="cv_text"``) untuk diukur.
+Ringkasan profil menjadi default karena koreksi pengguna di UI ikut di-embed saat "Cocokkan
+ulang", dan ringkasan tidak memuat nama atau kontak. Teks CV mentah (``query="cv_text"``)
+hanya untuk pengukuran.
 
-Nilai default ``MatchConfig`` diukur dengan set eval Cocokkan CV (tests/eval/cv_cases.yaml v1.1,
-5 CV fiktif, run cv-c1d-20261021-2130): precision@5 dan @10 = 1.00 untuk kelima CV. Default
-berada di tengah dataran: query profil + ``max`` dengan ``skill_prior`` 1-3 dan
-``semantic_weight`` 0.4-0.7 sama-sama 1.00/1.00 (12 dari 80 konfigurasi grid). ``skill_prior``
-0 dan query teks CV tidak pernah mencapai 1.00/1.00.
+Nilai default ``MatchConfig`` dipilih dengan set eval Cocokkan CV (tests/eval/cv_cases.yaml,
+5 CV fiktif): precision@5 dan @10 = 1.00 untuk kelima CV. Default berada di tengah rentang
+yang sama baiknya: query profil + ``max`` dengan ``skill_prior`` 1-3 dan ``semantic_weight``
+0.4-0.7 (12 dari 80 konfigurasi grid). ``skill_prior`` 0 dan query teks CV tidak pernah
+mencapai 1.00/1.00.
 """
 
 from collections import Counter, defaultdict
@@ -75,7 +74,7 @@ class MatchConfig(BaseModel):
 
 
 class JobMatch(BaseModel):
-    """Satu lowongan hasil pencocokan, berisi data yang ditampilkan di kartu 02b."""
+    """Satu lowongan hasil pencocokan, berisi data yang ditampilkan di kartu hasil."""
 
     job_id: int
     job_title: str
@@ -157,7 +156,7 @@ def aggregate_job_scores(
     """Gabungkan skor chunk menjadi satu skor per lowongan.
 
     Untuk ``mean``, lowongan yang chunk-nya terambil kurang dari ``top_chunks`` diisi dengan
-    skor chunk TERENDAH yang terambil dari Qdrant. Chunk lowongan itu yang tidak terambil
+    skor chunk terendah yang terambil dari Qdrant. Chunk lowongan itu yang tidak terambil
     pasti skornya tidak lebih tinggi dari nilai tersebut, jadi isian ini batas atas yang
     jujur. Tanpa isian, lowongan dengan satu chunk bagus akan mengalahkan lowongan dengan
     tiga chunk bagus.

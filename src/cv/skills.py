@@ -2,7 +2,7 @@
 
 Dua sumber skill dipakai bersama:
 - ``SKILL_VOCAB``: kosakata hard skill yang dikurasi dari 473 deskripsi lowongan; setiap
-  istilah muncul di minimal 2 lowongan. Kosakata menentukan skill yang DISEBUT lowongan,
+  istilah muncul di minimal 2 lowongan. Kosakata menentukan skill yang disebut lowongan,
   sehingga "skill kurang" bisa ditampilkan.
 - Skill CV di luar kosakata (misalnya "YOLO", "SHAP", "LangChain") tetap dicari langsung di
   deskripsi, supaya tidak hilang hanya karena tidak ada di kosakata.
@@ -149,7 +149,8 @@ SKILL_VOCAB: dict[str, tuple[str, ...]] = {
     "Employee Relations": ("employee relations",),
     "Project Management": ("project management", "pmp"),
     # Bahasa
-    "English": ("english", "bahasa inggris"),
+    # "berbahasa inggris": bentuk di 17 deskripsi, tidak tertangkap "bahasa inggris" (batas kata).
+    "English": ("english", "bahasa inggris", "berbahasa inggris"),
     "Mandarin": ("mandarin",),
     "Japanese": ("japanese", "bahasa jepang"),
     "Korean": ("korean", "bahasa korea"),
@@ -163,14 +164,19 @@ _NOT_BEFORE: dict[str, tuple[str, ...]] = {
     "recruitment": ("process", "agency", "faq", "service", "services", "fee", "fees"),
 }
 
-# Alias yang hanya aman di DAFTAR SKILL CV: "Word" di CV pasti Microsoft Word, tetapi "word"
+# Alias yang hanya aman di daftar skill CV: "Word" di CV pasti Microsoft Word, tetapi "word"
 # di deskripsi lowongan adalah kata biasa (muncul di 29 lowongan).
 CV_ONLY_ALIASES: dict[str, str] = {
     "word": "Microsoft Word",
     "ppt": "PowerPoint",
     "js": "JavaScript",
     "go": "Golang",
+    "inggris": "English",
 }
+
+# Bahasa ibu pelamar, bukan skill pembeda. Sebagai skill tambahan, "Indonesia" cocok dengan nama
+# negara atau perusahaan di 110 dari 473 deskripsi.
+NATIVE_LANGUAGES = frozenset({"indonesia", "bahasa indonesia", "indonesian"})
 
 # Skill CV yang tidak dihitung (lihat docstring modul). Dibandingkan setelah huruf kecil.
 SOFT_SKILLS = frozenset(
@@ -221,6 +227,25 @@ _LEVEL_WORDS = frozenset(
 )
 _PARENS = re.compile(r"\(([^)]*)\)")
 _SPLIT = re.compile(r"\s*[,;/]\s*")
+# Alias kosakata yang memuat "/" ("a/b testing", "ci/cd", "ui/ux") dilindungi dari _SPLIT.
+# Tanpa ini "A/B Testing" di CV menjadi skill tambahan "B Testing", sehingga lowongan yang
+# menyebut A/B testing (12 dari 473) mencatatnya sebagai skill kurang dan sekaligus cocok.
+_SLASH_ALIASES = re.compile(
+    "|".join(
+        re.escape(alias)
+        for alias in sorted(
+            {a for aliases in SKILL_VOCAB.values() for a in aliases if "/" in a},
+            key=len,
+            reverse=True,
+        )
+    ),
+    re.IGNORECASE,
+)
+_SLASH_GUARD = "\x00"
+# Skill tambahan di luar kosakata yang lebih pendek dari ini tidak dicari di deskripsi: pecahan
+# seperti "CO" dari "SAP FI/CO" cocok dengan "Co., Ltd" dan ".co.id" di 11 dari 473 deskripsi.
+# Skill pendek yang sah ("AI", "Go") dikenali lewat kosakata atau ``CV_ONLY_ALIASES``.
+MIN_EXTRA_CHARS = 3
 
 
 def term_pattern(alias: str) -> re.Pattern[str]:
@@ -244,7 +269,7 @@ def _vocab_pattern(aliases: Iterable[str]) -> re.Pattern[str]:
 
 
 def _needles(aliases: Iterable[str]) -> tuple[str, ...]:
-    """Potongan teks yang PASTI ada jika alias cocok: token terpanjang setiap alias."""
+    """Potongan teks yang pasti ada jika alias cocok: token terpanjang setiap alias."""
     return tuple(max(re.split(r"[\s\-]+", alias.strip().lower()), key=len) for alias in aliases)
 
 
@@ -271,16 +296,18 @@ def skill_variants(skill: str) -> list[str]:
     """Pecah satu skill CV menjadi varian yang bisa dicari di deskripsi.
 
     "Computer Vision (YOLO)" -> ["Computer Vision", "YOLO"]; "HTML/CSS" -> ["HTML", "CSS"];
-    "English (Intermediate)" -> ["English"]. LLM menyalin skill persis dengan keterangan dalam
-    kurung, sehingga string utuhnya hampir tidak pernah muncul di deskripsi lowongan.
+    "English (Intermediate)" -> ["English"]; "A/B Testing" tetap utuh karena aliasnya ada di
+    kosakata. LLM menyalin skill persis dengan keterangan dalam kurung, sehingga string utuhnya
+    hampir tidak pernah muncul di deskripsi lowongan.
     """
-    inner = [part for group in _PARENS.findall(skill) for part in _SPLIT.split(group)]
-    outer = _SPLIT.split(_PARENS.sub(" ", skill))
+    guarded = _SLASH_ALIASES.sub(lambda m: m.group(0).replace("/", _SLASH_GUARD), skill)
+    inner = [part for group in _PARENS.findall(guarded) for part in _SPLIT.split(group)]
+    outer = _SPLIT.split(_PARENS.sub(" ", guarded))
     variants: dict[str, str] = {}
     for part in [*outer, *inner]:
-        text = " ".join(part.split())
+        text = " ".join(part.replace(_SLASH_GUARD, "/").split())
         key = text.lower()
-        if len(key) < 2 or key in _LEVEL_WORDS or key in SOFT_SKILLS:
+        if len(key) < 2 or key in _LEVEL_WORDS or key in SOFT_SKILLS or key in NATIVE_LANGUAGES:
             continue
         variants.setdefault(key, text)
     return list(variants.values())
@@ -314,7 +341,7 @@ def build_cv_skills(skills: Sequence[str]) -> CVSkills:
             found = frozenset({alias}) if alias else vocab_in_text(variant)
             if found:
                 vocab |= found
-            else:
+            elif len(variant) >= MIN_EXTRA_CHARS:
                 extras.setdefault(variant.lower(), (variant, term_pattern(variant)))
     return CVSkills(vocab=frozenset(vocab), extras=tuple(extras.values()))
 
