@@ -109,10 +109,26 @@ class JobRepository:
 
         return locations
 
-    def execute_sql(self, sql: str) -> list[dict[str, Any]]:
-        """Jalankan query SELECT yang sudah divalidasi oleh SQL agent."""
-        rows = self.db._execute(sql)
-        return [dict(row) for row in rows]
+    def execute_sql(self, sql: str, *, max_rows: int) -> list[dict[str, Any]]:
+        """Jalankan query SQL agent pada koneksi SQLite yang hanya boleh membaca.
+
+        ``PRAGMA query_only`` membuat SQLite menolak setiap penulisan di koneksi ini,
+        termasuk ``WITH ... DELETE``, terlepas dari validasi di SQL agent. Query
+        dikirim apa adanya ke driver (tanpa parsing parameter ``:nama``), dan hanya
+        ``max_rows`` baris pertama yang diambil walaupun LIMIT di query lebih besar.
+
+        Raises:
+            sqlalchemy.exc.DBAPIError: Query ditolak atau gagal di SQLite. Pesannya
+                dipakai SQL agent sebagai umpan balik saat retry.
+        """
+        with self.db._engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA query_only = ON")
+            try:
+                result = connection.exec_driver_sql(sql)
+                return [dict(row._mapping) for row in result.fetchmany(max_rows)]
+            finally:
+                connection.rollback()
+                connection.exec_driver_sql("PRAGMA query_only = OFF")
 
     def get_jobs_schema(self) -> str:
         """Ambil DDL tabel ``jobs`` dari database untuk prompt SQL agent."""
@@ -123,6 +139,7 @@ class JobRepository:
     ) -> list[tuple[Document, float]]:
         return self.vector_db.similarity_search_with_score(query, k, filter)
 
+
 def get_job_descriptions(db_path: str | Path) -> list[tuple[int, str]]:
     """Ambil pasangan ``(id, job_description)`` semua lowongan.
 
@@ -131,7 +148,6 @@ def get_job_descriptions(db_path: str | Path) -> list[tuple[int, str]]:
     """
     with closing(connect_readonly(db_path)) as conn:
         return conn.execute("SELECT id, COALESCE(job_description, '') FROM jobs").fetchall()
-
 
 
 def get_job_locations(db_path: str | Path) -> list[tuple[int, str]]:

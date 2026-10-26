@@ -1,23 +1,22 @@
-"""SQL agent bagian tanpa LLM: validasi, eksekusi, koneksi read-only."""
+"""SQL agent bagian tanpa LLM: validasi query dan eksekusi baca-saja di repository."""
 
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 
 from src.agents.prompts import SQL_SCHEMA_COLUMNS
-from src.agents.sql_agent import (
-    SQLExecutionError,
-    UnsafeSQLError,
-    execute_sql,
-    extract_sql,
-    stem_title_patterns,
-    validate_sql,
-)
+from src.agents.sql_agent import SqlAgent
 from src.repositories.job_repository import connect_readonly
 
 REAL_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
+
+
+@pytest.fixture
+def agent() -> SqlAgent:
+    return SqlAgent(llm=None, job_repository=None)
 
 
 def _count_jobs(db_path) -> int:
@@ -25,58 +24,54 @@ def _count_jobs(db_path) -> int:
         return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 
 
-# --- aturan pencocokan deterministik -----------------------------------------
-
-
-def test_title_patterns_are_stemmed():
-    sql = (
-        "WHERE (lower(job_title) LIKE '%graphic designer%' OR lower(job_title) LIKE '%desainer grafis%')"
-        " AND lower(location) LIKE '%bandung%'"
-    )
-    assert stem_title_patterns(sql) == (
-        "WHERE (lower(job_title) LIKE '%graphic design%' OR lower(job_title) LIKE '%desain grafis%')"
-        " AND lower(location) LIKE '%bandung%'"
-    )
-
-
-def test_title_stem_keeps_other_patterns_and_columns():
-    sql = (
-        "WHERE lower(job_title) LIKE '%data analyst%' AND lower(company_name) LIKE '%designer%'"
-        " AND lower(job_title) LIKE '%design%'"
-    )
-    assert stem_title_patterns(sql) == sql
-
-
 # --- extract_sql / validate_sql --------------------------------------------
 
 
-def test_extract_sql_from_code_fence():
-    text = "Berikut query:\n```sql\nSELECT 1\n```\nSemoga membantu."
-    assert extract_sql(text) == "SELECT 1"
+def test_extract_sql_from_code_fence(agent):
+    assert agent.extract_sql("```sql\nSELECT 1\n```") == "SELECT 1"
 
 
-def test_validate_adds_limit_when_missing():
-    assert validate_sql("SELECT * FROM jobs", max_rows=20).endswith("LIMIT 20")
+def test_validate_adds_limit_when_missing(agent):
+    assert agent.validate_sql("SELECT * FROM jobs").endswith("\nLIMIT 50")
 
 
-def test_validate_keeps_existing_limit():
+def test_validate_keeps_existing_limit(agent):
     sql = "SELECT * FROM jobs LIMIT 5"
-    assert validate_sql(sql) == sql
+    assert agent.validate_sql(sql) == sql
 
 
-def test_validate_keeps_limit_with_offset():
+def test_validate_keeps_limit_with_offset(agent):
     sql = "SELECT * FROM jobs LIMIT 5 OFFSET 10"
-    assert validate_sql(sql) == sql
+    assert agent.validate_sql(sql) == sql
 
 
-def test_validate_strips_semicolon_fence_and_comments():
-    raw = "```sql\n-- hitung semua\nSELECT COUNT(*) FROM jobs LIMIT 1; -- selesai\n```"
-    assert validate_sql(raw) == "SELECT COUNT(*) FROM jobs LIMIT 1"
+def test_validate_adds_limit_when_only_subquery_has_limit(agent):
+    sql = "SELECT * FROM (SELECT id FROM jobs LIMIT 10)"
+    assert agent.validate_sql(sql) == f"{sql}\nLIMIT 50"
 
 
-def test_validate_accepts_with_clause():
+def test_validate_strips_semicolon_and_comments(agent):
+    raw = "-- hitung semua\nSELECT COUNT(*) FROM jobs LIMIT 1; -- selesai"
+    assert agent.validate_sql(raw) == "SELECT COUNT(*) FROM jobs LIMIT 1"
+
+
+def test_validate_accepts_with_clause(agent):
     sql = "WITH t AS (SELECT * FROM jobs) SELECT COUNT(*) FROM t LIMIT 1"
-    assert validate_sql(sql) == sql
+    assert agent.validate_sql(sql) == sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT id FROM jobs WHERE lower(job_description) LIKE '%delete%' LIMIT 5",
+        "SELECT replace(job_title, 'Sr.', 'Senior') AS judul FROM jobs LIMIT 5",
+        "SELECT id FROM jobs WHERE job_title LIKE '%;%' LIMIT 5",
+        "SELECT id FROM jobs WHERE job_title LIKE '%--%' LIMIT 5",
+        "SELECT updated_at FROM jobs LIMIT 5",
+    ],
+)
+def test_validate_ignores_keywords_inside_strings_and_names(agent, sql):
+    assert agent.validate_sql(sql) == sql
 
 
 @pytest.mark.parametrize(
@@ -84,17 +79,23 @@ def test_validate_accepts_with_clause():
     [
         "",
         "   ",
+        "-- hanya komentar",
         "DELETE FROM jobs",
         "DROP TABLE jobs",
         "UPDATE jobs SET status = 'CLOSED'",
         "PRAGMA table_info(jobs)",
         "ATTACH DATABASE 'x.db' AS x",
         "Maaf, saya tidak bisa menjawab itu.",
+        "WITH x AS (SELECT 1) DELETE FROM jobs",
+        "WITH x AS (SELECT 1) REPLACE INTO jobs (id, job_title) VALUES (1, 'x')",
+        "WITH x AS (SELECT 1) INSERT INTO jobs (job_title) SELECT 'x' FROM x",
+        "SELECT 1; DROP TABLE jobs",
+        "SELECT 1; SELECT 2",
     ],
 )
-def test_validate_rejects_non_select(sql):
-    with pytest.raises(UnsafeSQLError):
-        validate_sql(sql)
+def test_validate_rejects_anything_but_one_read_statement(agent, sql):
+    with pytest.raises(ValueError):
+        agent.validate_sql(sql)
 
 
 # --- connect_readonly ------------------------------------------------------
@@ -114,56 +115,64 @@ def test_connect_readonly_blocks_direct_write(jobs_db):
     assert _count_jobs(jobs_db) == 6
 
 
-# --- execute_sql -----------------------------------------------------------
+# --- JobRepository.execute_sql ---------------------------------------------
 
 
-def test_execute_returns_dict_rows(jobs_db):
-    rows = execute_sql(
-        validate_sql("SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'"),
-        jobs_db,
+def test_execute_returns_dict_rows(make_repository):
+    rows = make_repository().execute_sql(
+        "SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'", max_rows=50
     )
     assert rows == [{"jumlah": 3}]
 
 
-def test_execute_salary_aggregate_ignores_null(jobs_db):
-    rows = execute_sql(
-        "SELECT AVG(salary_min) AS rata, COUNT(salary_min) AS n FROM jobs LIMIT 1", jobs_db
+def test_execute_salary_aggregate_ignores_null(make_repository):
+    rows = make_repository().execute_sql(
+        "SELECT AVG(salary_min) AS rata, COUNT(salary_min) AS n FROM jobs LIMIT 1", max_rows=50
     )
     assert rows == [{"rata": 8_750_000.0, "n": 4}]
 
 
-def test_execute_caps_rows_even_with_large_limit(jobs_db):
-    rows = execute_sql("SELECT id FROM jobs LIMIT 1000", jobs_db, max_rows=2)
-    assert len(rows) == 2
+def test_execute_caps_rows_even_with_large_limit(make_repository):
+    assert len(make_repository().execute_sql("SELECT id FROM jobs LIMIT 1000", max_rows=2)) == 2
 
 
-def test_execute_blocks_write_hidden_in_cte(jobs_db):
-    # Diawali WITH sehingga lolos cek bentuk; harus ditolak koneksi read-only.
-    # Sengaja tanpa validate_sql: di SQLite bawaan macOS, "DELETE ... LIMIT"
-    # sudah gagal sebagai syntax error sebelum mode read-only sempat diuji.
-    with pytest.raises(SQLExecutionError, match="readonly"):
-        execute_sql("WITH x AS (SELECT 1) DELETE FROM jobs", jobs_db)
+def test_execute_keeps_colon_text_without_bind_parameters(make_repository):
+    rows = make_repository().execute_sql("SELECT '10:30' AS jam, ':id' AS teks", max_rows=1)
+    assert rows == [{"jam": "10:30", "teks": ":id"}]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH x AS (SELECT 1) DELETE FROM jobs",
+        "DELETE FROM jobs",
+        "UPDATE jobs SET status = 'CLOSED'",
+        "DROP TABLE jobs",
+    ],
+)
+def test_execute_rejects_write_even_without_validation(jobs_db, make_repository, sql):
+    with pytest.raises(DBAPIError, match="readonly"):
+        make_repository().execute_sql(sql, max_rows=50)
     assert _count_jobs(jobs_db) == 6
 
 
-def test_execute_blocks_multiple_statements(jobs_db):
-    with pytest.raises(SQLExecutionError):
-        execute_sql("SELECT 1; DROP TABLE jobs", jobs_db)
+def test_execute_rejects_multiple_statements(jobs_db, make_repository):
+    with pytest.raises(DBAPIError):
+        make_repository().execute_sql("SELECT 1; DROP TABLE jobs", max_rows=50)
     assert _count_jobs(jobs_db) == 6
 
 
-def test_execute_reports_syntax_error(jobs_db):
-    with pytest.raises(SQLExecutionError, match="no such column"):
-        execute_sql("SELECT kolom_palsu FROM jobs LIMIT 1", jobs_db)
+def test_read_only_mode_does_not_leak_to_next_query(make_repository):
+    repository = make_repository()
+    with pytest.raises(DBAPIError):
+        repository.execute_sql("SELECT kolom_palsu FROM jobs", max_rows=1)
+    with repository.db._engine.connect() as connection:
+        assert connection.exec_driver_sql("PRAGMA query_only").scalar() == 0
 
 
-def test_execute_stops_long_running_query(jobs_db):
-    endless = (
-        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) "
-        "SELECT COUNT(*) FROM c LIMIT 1"
-    )
-    with pytest.raises(SQLExecutionError, match="batas waktu"):
-        execute_sql(endless, jobs_db, timeout_seconds=0.2)
+def test_execute_reports_syntax_error(make_repository):
+    with pytest.raises(DBAPIError, match="no such column"):
+        make_repository().execute_sql("SELECT kolom_palsu FROM jobs LIMIT 1", max_rows=1)
 
 
 # --- sinkronisasi prompt dengan database asli ------------------------------

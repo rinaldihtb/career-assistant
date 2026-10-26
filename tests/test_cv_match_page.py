@@ -34,6 +34,9 @@ from src.cv.profile import CVProfile, Experience
 from src.models.agent import LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
+# Run pertama di satu proses pytest memuat pandas/pyarrow untuk st.dataframe: 7 detik di
+# workspace dan lebih dari 10 detik di laptop macOS. Run berikutnya di bawah 1 detik.
+APP_TIMEOUT = 30
 CV_PDF = Path("tests/eval/cv/cv01_data_analyst.pdf")
 DEPS = CVDependencies(llm="llm", embeddings="emb", vector_store="store", db_path="db.sqlite")
 PROFILE = CVProfile(
@@ -124,7 +127,7 @@ def _page():
 
 
 def _app(cv_state: dict | None = None) -> AppTest:
-    app = AppTest.from_function(_page, default_timeout=10)
+    app = AppTest.from_function(_page, default_timeout=APP_TIMEOUT)
     if cv_state is not None:
         app.session_state[CV_STATE_KEY] = cv_state
     app.run()
@@ -273,9 +276,9 @@ def test_replace_clears_cv_and_asks_consent_again(calls):
 
 
 def test_page_is_registered_and_sidebar_shows_cv_status(calls):
-    app = AppTest.from_file(str(APP_PATH), default_timeout=10)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=APP_TIMEOUT)
     app.run()
-    app.switch_page("pages/cvmatch.page.py").run()
+    app.switch_page("pages/cvmatch_page.py").run()
 
     assert not app.exception
     assert app.markdown[0].value == PAGE_TITLE

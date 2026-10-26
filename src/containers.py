@@ -1,32 +1,35 @@
-"""Dependency instances used by the application."""
+"""Composition root: membuat dependency aplikasi sekali per proses.
+
+Konfigurasi LLM, Qdrant, dan SQLite di ``src/config`` baru di-import saat fungsi
+dipanggil pertama kali, sehingga modul ini bisa di-import tanpa .env dan tanpa
+jaringan. Test mengganti fungsi di modul pemakainya dengan dependency palsu.
+"""
+
+from functools import cache
 
 from src.agents.rag_agent import RagAgent
 from src.agents.sql_agent import SqlAgent
-
-# from agents.supervisor_agent_normal import SupervisorAgent
 from src.agents.supervisor_agent_graph import SupervisorAgent
-from src.config.database import SQL_DB, VECTOR_DB
-from src.config.llm import LLM_MODEL
 from src.repositories.job_repository import JobRepository
 
-job_repository = JobRepository(db=SQL_DB, vector_db=VECTOR_DB)
 
-# Normal
-# agent_tools = [
-#     RagAgent(llm=LLM_MODEL, job_repository=job_repository).as_tool(),
-#     SqlAgent(llm=LLM_MODEL, job_repository=job_repository).as_tool(),
-# ]
+@cache
+def get_job_repository() -> JobRepository:
+    """Repository lowongan dari ``SQL_DB`` dan ``VECTOR_DB``; dibuat sekali lalu dipakai ulang."""
+    from src.config.database import SQL_DB, VECTOR_DB
 
-# supervisor_agent = SupervisorAgent(
-#     llm=LLM_MODEL,
-#     job_repository=job_repository,
-#     agent_tools=agent_tools,
-# )
+    return JobRepository(db=SQL_DB, vector_db=VECTOR_DB)
 
-# Graph
-supervisor_agent = SupervisorAgent(
-    llm=LLM_MODEL,
-    job_repository=job_repository,
-    rag_agent=RagAgent(LLM_MODEL, job_repository).create_rag_agent(),
-    sql_agent=SqlAgent(LLM_MODEL, job_repository).create_sql_agent(),
-)
+
+@cache
+def get_supervisor_agent() -> SupervisorAgent:
+    """Supervisor graph dengan worker RAG dan SQL yang memakai ``LLM_MODEL`` yang sama."""
+    from src.config.llm import LLM_MODEL
+
+    job_repository = get_job_repository()
+    return SupervisorAgent(
+        llm=LLM_MODEL,
+        job_repository=job_repository,
+        rag_agent=RagAgent(LLM_MODEL, job_repository).create_rag_agent(),
+        sql_agent=SqlAgent(LLM_MODEL, job_repository).create_sql_agent(),
+    )

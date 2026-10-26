@@ -168,7 +168,7 @@ def fake_profile(monkeypatch, profile):
         calls.append(cv_text)
         return CVProfileResult(profile=profile)
 
-    monkeypatch.setattr("evaluation.run_cv_eval.extract_cv_profile", extract)
+    monkeypatch.setattr("src.evaluation.run_cv_eval.extract_cv_profile", extract)
     return calls
 
 

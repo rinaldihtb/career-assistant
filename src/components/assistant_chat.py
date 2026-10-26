@@ -1,10 +1,10 @@
 """Halaman Asisten Karier: chat yang memanggil supervisor agent.
 
 Komponen ini hanya mengurus tampilan dan riwayat chat. Pemilihan dan
-penggabungan agent (SQL, RAG, atau pesan umum) sepenuhnya dikerjakan
-``run_supervisor``; UI tidak memanggil agent lain secara langsung. Jawaban
-gabungan (``source="multi"``) ditampilkan per bagian dengan aturan yang sama
-seperti jawaban satu agent.
+penggabungan agent (SQL, RAG, atau pesan umum) sepenuhnya dikerjakan graph
+``SupervisorAgent`` dari ``src.containers``; UI tidak memanggil agent lain secara
+langsung. Jawaban gabungan (``source="multi"``) ditampilkan per bagian dengan aturan
+yang sama seperti jawaban satu agent.
 """
 
 import logging
@@ -17,7 +17,7 @@ from typing import Any
 import streamlit as st
 
 from src.components.job_description import description_to_markdown, escape_markdown
-from src.containers import job_repository, supervisor_agent
+from src.containers import get_job_repository, get_supervisor_agent
 from src.helpers.format import format_salary
 from src.models.agent import AgentResult
 
@@ -76,6 +76,13 @@ def render_assistant_page() -> None:
     st.markdown("## Asisten Karier")
     st.caption("Tanyakan lowongan atau statistik lowongan dari data kami.")
 
+    try:
+        get_supervisor_agent()
+    except Exception:  # konfigurasi .env belum lengkap: tampilkan pesan, bukan traceback
+        logger.exception("Gagal membuat supervisor agent")
+        st.error(DEPENDENCY_ERROR)
+        return
+
     messages: list[dict[str, Any]] = st.session_state.setdefault(MESSAGES_KEY, [])
     for message in messages:
         _render_message(message)
@@ -97,9 +104,10 @@ def render_assistant_page() -> None:
 def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
 
-    ``history`` diambil SEBELUM pertanyaan baru ditambahkan, sesuai kontrak
-    ``run_supervisor`` (riwayat tanpa pertanyaan saat ini). ``AgentResult``
-    dan durasi ikut disimpan agar kartu dan detail LLM tetap tampil saat rerun.
+    Graph menerima riwayat lalu pertanyaan baru sebagai ``messages``; ``history``
+    diambil sebelum pertanyaan ditambahkan agar pertanyaan tidak terkirim dua kali.
+    ``AgentResult`` dan durasi ikut disimpan agar kartu dan detail LLM tetap tampil
+    saat rerun.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
     user_message = {"role": "user", "content": question}
@@ -109,7 +117,7 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     with st.chat_message("assistant"):
         with st.spinner("Mencari jawaban..."):
             start = time.perf_counter()
-            state = supervisor_agent.graph.invoke({"messages": [*history, user_message]})
+            state = get_supervisor_agent().graph.invoke({"messages": [*history, user_message]})
             result: AgentResult = state["result"]
             seconds = time.perf_counter() - start
             display = prepare_display(result)
@@ -282,7 +290,7 @@ def prepare_display(result: AgentResult) -> Display:
     if not cited:
         return Display(result.answer)
     try:
-        jobs = job_repository.get_jobs_by_ids(cited)
+        jobs = get_job_repository().get_jobs_by_ids(cited)
     except Exception:  # kartu hanya pelengkap: jika gagal, jawaban teks tetap tampil
         logger.exception("Gagal mengambil detail lowongan untuk kartu SQL")
         return Display(result.answer)

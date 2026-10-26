@@ -1,11 +1,12 @@
 """Halaman Asisten Karier dengan Streamlit AppTest (tanpa browser dan tanpa API key).
 
-``run_supervisor`` diganti fungsi palsu: yang dites di sini adalah UI, yaitu
+``get_supervisor_agent`` diganti graph palsu: yang dites di sini adalah UI, yaitu
 riwayat chat, kartu lowongan, tabel SQL, dan penanganan error. Logika agent
 sudah dites di file test masing-masing.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -15,14 +16,15 @@ from src.components.assistant_chat import (
     DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
-    AssistantDependencies,
     prepare_display,
     split_rag_answer,
 )
 from src.models.agent import AgentResult, LLMCall, LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
-DEPS = AssistantDependencies(llm="llm", vector_store="store", db_path="db.sqlite")
+# Run pertama di satu proses pytest memuat pandas/pyarrow untuk st.dataframe: 7 detik di
+# workspace dan lebih dari 10 detik di laptop macOS. Run berikutnya di bawah 1 detik.
+APP_TIMEOUT = 30
 
 RAG_RESULT = AgentResult(
     answer="Ada satu:\n- [ID:14] Data Analyst - PT Alpha (Jakarta): cocok.",
@@ -66,23 +68,39 @@ def _page():
     render_assistant_page()
 
 
+class FakeGraph:
+    """Pengganti ``SupervisorAgent.graph``: mencatat input, membalas ``AgentResult`` berurutan.
+
+    Hasil terakhir dipakai ulang jika pertanyaan lebih banyak dari daftar hasil.
+    """
+
+    def __init__(self, *results: AgentResult) -> None:
+        self.inputs: list[dict] = []
+        self.results = results
+
+    def invoke(self, state: dict) -> dict:
+        self.inputs.append(state)
+        return {"result": self.results[min(len(self.inputs), len(self.results)) - 1]}
+
+
+def _use(monkeypatch, *results: AgentResult, repository=None) -> FakeGraph:
+    """Pasang graph palsu (dan repository bila ada) di halaman Asisten."""
+    graph = FakeGraph(*results)
+    agent = SimpleNamespace(graph=graph)
+    monkeypatch.setattr(assistant_chat, "get_supervisor_agent", lambda: agent)
+    if repository is not None:
+        monkeypatch.setattr(assistant_chat, "get_job_repository", lambda: repository)
+    return graph
+
+
 @pytest.fixture
 def calls(monkeypatch):
-    """Ganti dependency dan supervisor; kembalikan daftar argumen setiap panggilan."""
-    recorded: list[dict] = []
-    replies = iter([RAG_RESULT, SQL_RESULT])
-
-    def fake_run_supervisor(question, **kwargs):
-        recorded.append({"question": question, **kwargs})
-        return next(replies)
-
-    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: DEPS)
-    monkeypatch.setattr(assistant_chat, "run_supervisor", fake_run_supervisor)
-    return recorded
+    """Graph palsu RAG lalu SQL; kembalikan daftar input ``invoke`` setiap pertanyaan."""
+    return _use(monkeypatch, RAG_RESULT, SQL_RESULT).inputs
 
 
 def _app() -> AppTest:
-    app = AppTest.from_function(_page, default_timeout=10)
+    app = AppTest.from_function(_page, default_timeout=APP_TIMEOUT)
     app.run()
     return app
 
@@ -111,8 +129,9 @@ def test_rag_answer_shows_uniform_card_with_reason(calls):
         "Lokasi: Jakarta Selatan, Jakarta Raya (Hibrid) | Tipe: Full time | "
         "Gaji: Rp8.000.000 - Rp10.000.000 per bulan | ID 14"
     ) in [caption.value for caption in app.caption]
-    assert calls[0]["history"] == []
-    assert calls[0]["db_path"] == "db.sqlite"
+    assert calls[0] == {
+        "messages": [{"role": "user", "content": "Lowongan data analyst di Jakarta"}]
+    }
 
 
 def test_llm_usage_detail_per_call(calls):
@@ -138,8 +157,7 @@ def test_llm_usage_detail_per_call(calls):
 
 def test_rag_answer_without_id_lines_falls_back_to_full_text(monkeypatch):
     result = RAG_RESULT.model_copy(update={"answer": "Lowongan ID 14 cocok untuk Anda."})
-    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: DEPS)
-    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda question, **kwargs: result)
+    _use(monkeypatch, result)
     app = _app()
     app.chat_input[0].set_value("Lowongan data analyst").run()
 
@@ -155,9 +173,10 @@ def test_second_question_sends_history_and_sql_shows_table(calls):
     app.chat_input[0].set_value("Rata-rata gajinya berapa?").run()
 
     assert not app.exception
-    assert calls[1]["history"] == [
+    assert calls[1]["messages"] == [
         {"role": "user", "content": "Lowongan data analyst di Jakarta"},
         {"role": "assistant", "content": RAG_RESULT.answer},
+        {"role": "user", "content": "Rata-rata gajinya berapa?"},
     ]
     assert len(app.chat_message) == 4
     tables = [table.value.to_dict("records") for table in app.dataframe]
@@ -179,7 +198,7 @@ def test_example_button_asks_question(calls):
     app = _app()
     app.button[0].click().run()
 
-    assert calls[0]["question"] == EXAMPLE_QUESTIONS[0]
+    assert calls[0]["messages"][-1]["content"] == EXAMPLE_QUESTIONS[0]
     assert len(app.chat_message) == 2
 
 
@@ -196,7 +215,7 @@ def test_missing_config_shows_error_instead_of_crash(monkeypatch):
     def broken():
         raise KeyError("QDRANT_URL")
 
-    monkeypatch.setattr(assistant_chat, "load_dependencies", broken)
+    monkeypatch.setattr(assistant_chat, "get_supervisor_agent", broken)
     app = _app()
 
     assert not app.exception
@@ -205,9 +224,9 @@ def test_missing_config_shows_error_instead_of_crash(monkeypatch):
 
 
 def test_page_is_registered_in_app(calls):
-    app = AppTest.from_file(str(APP_PATH), default_timeout=10)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=APP_TIMEOUT)
     app.run()
-    app.switch_page("pages/assistant.page.py").run()
+    app.switch_page("pages/assistant_page.py").run()
 
     assert not app.exception
     assert app.markdown[0].value == "## Asisten Karier"
@@ -246,8 +265,16 @@ SQL_LIST_RESULT = AgentResult(
 )
 
 
-def test_prepare_display_sql_job_lines_become_cards(jobs_db):
-    display = prepare_display(SQL_LIST_RESULT, jobs_db)
+@pytest.fixture
+def repository(monkeypatch, make_repository):
+    """``get_job_repository`` halaman Asisten diarahkan ke database fixture."""
+    repository = make_repository()
+    monkeypatch.setattr(assistant_chat, "get_job_repository", lambda: repository)
+    return repository
+
+
+def test_prepare_display_sql_job_lines_become_cards(repository):
+    display = prepare_display(SQL_LIST_RESULT)
 
     assert display.text == "Lowongan dengan gaji tertinggi:"
     assert [(job["id"], note) for job, note in display.cards] == [
@@ -256,24 +283,27 @@ def test_prepare_display_sql_job_lines_become_cards(jobs_db):
     assert display.cards[0][0]["job_title"] == "Marketing Manager"  # detail dari SQLite
 
 
-def test_prepare_display_sql_aggregate_has_no_cards(jobs_db):
-    display = prepare_display(SQL_RESULT, jobs_db)
+def test_prepare_display_sql_aggregate_has_no_cards(repository):
+    display = prepare_display(SQL_RESULT)
 
     assert display.text == SQL_RESULT.answer
     assert display.cards == []
 
 
-def test_prepare_display_sql_database_error_falls_back_to_text(tmp_path):
-    display = prepare_display(SQL_LIST_RESULT, tmp_path / "tidak_ada.sqlite")
+def test_prepare_display_sql_database_error_falls_back_to_text(monkeypatch):
+    def broken_lookup(job_ids):
+        raise RuntimeError("database tidak bisa dibuka")
+
+    broken = SimpleNamespace(get_jobs_by_ids=broken_lookup)
+    monkeypatch.setattr(assistant_chat, "get_job_repository", lambda: broken)
+    display = prepare_display(SQL_LIST_RESULT)
 
     assert display.text == SQL_LIST_RESULT.answer
     assert display.cards == []
 
 
-def test_sql_job_list_renders_cards_and_table(monkeypatch, jobs_db):
-    deps = AssistantDependencies(llm="llm", vector_store="store", db_path=str(jobs_db))
-    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: deps)
-    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda q, **kwargs: SQL_LIST_RESULT)
+def test_sql_job_list_renders_cards_and_table(monkeypatch, make_repository):
+    _use(monkeypatch, SQL_LIST_RESULT, repository=make_repository())
     app = _app()
     app.chat_input[0].set_value("Lowongan dengan gaji tertinggi?").run()
 
@@ -288,8 +318,7 @@ def test_sql_job_list_renders_cards_and_table(monkeypatch, jobs_db):
 
 def test_dollar_sign_in_answer_is_not_latex(monkeypatch):
     result = AgentResult(answer="Gaji $1000 sampai $2000.", source="general")
-    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: DEPS)
-    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda q, **kwargs: result)
+    _use(monkeypatch, result)
     app = _app()
     app.chat_input[0].set_value("Halo").run()
 
@@ -311,8 +340,8 @@ MULTI_RESULT = AgentResult(
 )
 
 
-def test_prepare_display_multi_builds_display_per_part(jobs_db):
-    display = prepare_display(MULTI_RESULT, jobs_db)
+def test_prepare_display_multi_builds_display_per_part(repository):
+    display = prepare_display(MULTI_RESULT)
 
     assert display.text == "" and display.cards == []
     assert [len(part.cards) for part in display.parts] == [0, 1, 0]
@@ -320,8 +349,7 @@ def test_prepare_display_multi_builds_display_per_part(jobs_db):
 
 
 def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
-    monkeypatch.setattr(assistant_chat, "load_dependencies", lambda: DEPS)
-    monkeypatch.setattr(assistant_chat, "run_supervisor", lambda q, **kwargs: MULTI_RESULT)
+    _use(monkeypatch, MULTI_RESULT)
     app = _app()
     app.chat_input[0].set_value("Rata-rata gaji dan lowongan data analyst").run()
 

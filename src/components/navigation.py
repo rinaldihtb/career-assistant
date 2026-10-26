@@ -4,7 +4,7 @@ import streamlit as st
 
 from src.cv.ingest import CV_STATE_KEY
 
-CV_PAGE = "pages/cvmatch.page.py"
+CV_PAGE = "pages/cvmatch_page.py"
 
 
 def render_navigation() -> None:

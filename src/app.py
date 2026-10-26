@@ -22,7 +22,7 @@ job_search_page = st.Page(
 )
 
 cv_match_page = st.Page(
-    "pages/cvmatch.page.py",
+    "pages/cvmatch_page.py",
     title="Cocokkan CV",
     icon="📄",
 )

@@ -1,408 +1,289 @@
-"""Supervisor LangGraph (planner + fan-out paralel) dengan LLM palsu (gratis, tanpa API key).
+"""SupervisorAgent (planner + Send paralel + synthesize/respond) dengan LLM palsu.
 
-Sub-tugas berjalan paralel, jadi urutan panggilan LLM antar sub-tugas tidak pasti.
-Karena itu test memakai ``ScriptedLLM`` yang memilih balasan berdasarkan isi prompt
-(pertanyaan sub-tugas), bukan berdasarkan urutan panggilan. Balasan planner berupa
-``AIMessage`` dengan ``tool_calls``, persis bentuk yang dibaca parser structured
-output LangChain.
+Sub-tugas berjalan paralel, jadi ``ScriptedLLM`` memilih balasan dari isi prompt
+(jenis prompt dan pertanyaan sub-tugas), bukan dari urutan panggilan. Balasan
+planner berupa tool call ``Plan``, bentuk yang dibaca parser structured output.
 """
 
-import threading
-from typing import Any
-
 import pytest
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import ConfigDict, Field, PrivateAttr
+from conftest import ScriptedLLM, agent_script, plan_reply, tool_call
 
-from src.agents import supervisor_agent
 from src.agents.prompts import (
-    RAG_NO_CANDIDATE_MESSAGE,
-    SQL_FAILED_MESSAGE,
+    SUPERVISOR_CHAT_SYSTEM,
     SUPERVISOR_CLARIFY_MESSAGE,
+    SUPERVISOR_CLARIFY_SYSTEM,
     SUPERVISOR_DECLINED_NOTE,
-    SUPERVISOR_FAILED_MESSAGE,
     SUPERVISOR_GENERAL_MESSAGE,
-    SUPERVISOR_NO_HISTORY,
     SUPERVISOR_REFUSE_MESSAGE,
     SUPERVISOR_SKIPPED_NOTE,
     SUPERVISOR_UNSUPPORTED_MESSAGE,
 )
-from src.agents.supervisor_agent import (
-    MAX_HISTORY_CHARS,
-    MAX_HISTORY_MESSAGES,
-    SUPERVISOR_GRAPH,
-    SupervisorContext,
-    format_history,
-    run_supervisor,
-)
+from src.agents.rag_agent import RagAgent
+from src.agents.sql_agent import SqlAgent
+from src.agents.supervisor_agent_graph import SupervisorAgent, _chat_context, check_citations
 
-USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 LONG = "Deskripsi pekerjaan yang cukup panjang untuk lolos batas chunk minimum."
-COUNT_SQL = (
-    "```sql\nSELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'\n```"
-)
+CHUNKS = [(1, LONG, 0.70), (2, LONG, 0.60)]
+COUNT_SQL = "SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'"
+SQL_Q = "Berapa lowongan di Jakarta?"
+RAG_Q = "Lowongan data analyst"
 
 
-class ScriptedLLM(BaseChatModel):
-    """LLM palsu: planner membalas ``plan``; agent dibalas sesuai kunci di prompt.
-
-    Attributes:
-        plan: Balasan planner (``AIMessage`` tool call) atau Exception.
-        replies: ``{potongan_teks_prompt: [balasan, ...]}``. Panggilan agent mengambil
-            balasan pertama dari kunci yang muncul di prompt user-nya. Satu sub-tugas
-            selalu berjalan di satu thread, jadi urutan di dalam satu kunci tetap pasti.
-        received: Semua daftar pesan yang diterima, untuk diperiksa test.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    # Any, bukan AIMessage | Exception: Pydantic akan mencoba mengubah Exception menjadi AIMessage.
-    plan: Any = None
-    replies: dict[str, list[Any]] = Field(default_factory=dict)
-    received: list = Field(default_factory=list)
-    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted"
-
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        with self._lock:
-            self.received.append(messages)
-            if messages[0].content.startswith("Kamu planner"):
-                reply = self.plan
-            else:
-                prompt = messages[-1].content
-                key = next((k for k in self.replies if k in prompt and self.replies[k]), None)
-                assert key is not None, f"tidak ada balasan untuk prompt: {prompt[:120]}"
-                reply = self.replies[key].pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        message = reply if isinstance(reply, AIMessage) else AIMessage(reply, usage_metadata=USAGE)
-        return ChatResult(generations=[ChatGeneration(message=message)])
-
-
-def plan_reply(*subtasks, response="answer", skipped=(), declined=()) -> AIMessage:
-    """Balasan planner palsu: tool call ``Plan``; ``subtasks`` = pasangan (agent, pertanyaan)."""
-    args = {
-        "response": response,
-        "subtasks": [{"agent": agent, "question": question} for agent, question in subtasks],
-        "skipped": list(skipped),
-        "declined": list(declined),
-    }
-    return AIMessage(
-        content="", tool_calls=[{"name": "Plan", "args": args, "id": "1"}], usage_metadata=USAGE
+def _supervisor(llm, repository) -> SupervisorAgent:
+    return SupervisorAgent(
+        llm=llm,
+        job_repository=repository,
+        rag_agent=RagAgent(llm, repository).create_rag_agent(),
+        sql_agent=SqlAgent(llm, repository).create_sql_agent(),
     )
 
 
-@pytest.fixture
-def store(fake_vector_store):
-    return fake_vector_store([(1, LONG, 0.70), (2, LONG, 0.60)])
+def _invoke(llm, repository, question, history=()):
+    messages = [*history, {"role": "user", "content": question}]
+    return _supervisor(llm, repository).graph.invoke({"messages": messages})
 
 
-def _run(question, llm, store, db, history=()):
-    return run_supervisor(question, llm=llm, vector_store=store, db_path=db, history=history)
+# --- Satu sub-tugas ----------------------------------------------------------
 
 
-def _state(question, llm, store, db, history=()):
-    context = SupervisorContext(llm=llm, vector_store=store, db_path=db)
-    return SUPERVISOR_GRAPH.invoke(
-        {"question": question, "history": list(history)}, context=context
+def test_single_sql_subtask_passes_result_through(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q)),
+            sql={SQL_Q: COUNT_SQL},
+            answers={SQL_Q: "Ada 3 lowongan."},
+        )
     )
-
-
-# --- Satu sub-tugas: diteruskan apa adanya -----------------------------------
-
-
-def test_single_sql_subtask_passes_result_through(jobs_db, store):
-    q = "Berapa lowongan di Jakarta?"
-    llm = ScriptedLLM(plan=plan_reply(("sql", q)), replies={q: [COUNT_SQL, "Ada 3 lowongan."]})
-    result = _run(q, llm, store, jobs_db)
+    repository = make_repository(CHUNKS)
+    result = _invoke(llm, repository, SQL_Q)["result"]
 
     assert result.source == "sql"
-    assert result.answer == "Ada 3 lowongan."  # tidak dirangkum ulang
+    assert result.answer == "Ada 3 lowongan."
     assert result.rows == [{"jumlah": 3}]
     assert result.parts == []
-    assert [call.step for call in result.usage.calls] == ["planner", "sql_generate", "sql_answer"]
-    assert result.usage.total_tokens == 45
     assert result.error is None
-    assert store.calls == []
+    assert repository.vector_db.calls == []
 
 
-def test_single_rag_subtask_keeps_citation_guard(jobs_db, store):
-    q = "Lowongan data analyst"
-    llm = ScriptedLLM(plan=plan_reply(("rag", q)), replies={q: ["Cocok: [ID:1] dan [ID:999]."]})
-    result = _run(q, llm, store, jobs_db)
+def test_usage_counts_planner_worker_and_sql_generation(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q)),
+            sql={SQL_Q: COUNT_SQL},
+            answers={SQL_Q: "Ada 3 lowongan."},
+        )
+    )
+    usage = _invoke(llm, make_repository(), SQL_Q)["result"].usage
+
+    assert sorted(call.step for call in usage.calls) == ["planner", "sql", "sql", "sql_generate"]
+    assert usage.llm_calls == len(llm.received) == 4
+    assert usage.total_tokens == 60
+
+
+def test_single_rag_subtask_keeps_only_cited_candidates(make_repository):
+    answer = "Ada:\n- [ID:1] Data Analyst - PT Alpha (Jakarta): cocok.\n- [ID:9] Palsu - X (Y): z."
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(("rag", RAG_Q)), answers={RAG_Q: answer}))
+    result = _invoke(llm, make_repository(CHUNKS), RAG_Q)["result"]
 
     assert result.source == "rag"
     assert result.job_ids == [1]
-    assert result.error == "ID di luar kandidat dibuang: [999]"
-    assert result.usage.llm_calls == 2
+    assert [row["id"] for row in result.rows] == [1]
+    assert result.error == "ID di luar kandidat dibuang: [9]"
 
 
-# --- Beberapa sub-tugas: paralel lalu digabung tanpa LLM ---------------------
+# --- Beberapa sub-tugas ------------------------------------------------------
 
 
-def test_sql_and_rag_subtasks_are_combined_in_plan_order(jobs_db, store):
-    q_sql, q_rag = "Berapa lowongan di Jakarta?", "Lowongan data analyst"
+def test_sql_and_rag_subtasks_are_combined_in_plan_order(make_repository):
     llm = ScriptedLLM(
-        plan=plan_reply(("sql", q_sql), ("rag", q_rag)),
-        replies={q_sql: [COUNT_SQL, "Ada 3 lowongan."], q_rag: ["- [ID:1] Data Analyst: cocok."]},
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q), ("rag", RAG_Q)),
+            sql={SQL_Q: COUNT_SQL},
+            answers={SQL_Q: "Ada 3 lowongan.", RAG_Q: "- [ID:2] Data Analyst Intern: cocok."},
+        )
     )
-    state = _state("gabungan", llm, store, jobs_db)
+    state = _invoke(llm, make_repository(CHUNKS), f"{SQL_Q} {RAG_Q}")
     result = state["result"]
 
     assert result.source == "multi"
     assert [part.source for part in result.parts] == ["sql", "rag"]
-    assert result.parts[0].answer == f"**{q_sql}**\nAda 3 lowongan."
-    assert result.parts[1].answer == f"**{q_rag}**\n- [ID:1] Data Analyst: cocok."
+    assert result.parts[0].answer == f"**{SQL_Q}**\nAda 3 lowongan."
     assert result.answer == "\n\n".join(part.answer for part in result.parts)
-    assert result.job_ids == [1]
-    steps = [call.step for call in result.usage.calls]
-    assert steps == ["planner", "sql_generate", "sql_answer", "rag_answer"]  # urut sub-tugas
-    assert result.usage.total_tokens == 60
-    # Kontrak untuk evaluation.checks.extract_run.
-    assert state["subtasks"] == [
-        {"agent": "sql", "question": q_sql},
-        {"agent": "rag", "question": q_rag},
-    ]
-    assert [sub.source for sub in state["subresults"]] == ["sql", "rag"]
-    assert store.calls[0]["query"] == q_rag
-
-
-def test_two_sql_subtasks_run_separately(jobs_db, store):
-    q1, q2 = "Rata-rata gaji di Jakarta?", "Daftar lowongan di Jakarta"
-    llm = ScriptedLLM(
-        plan=plan_reply(("sql", q1), ("sql", q2)),
-        replies={
-            q1: [
-                "```sql\nSELECT AVG(salary_min) AS rata FROM jobs\n```",
-                "Rata-rata Rp10.000.000.",
-            ],
-            q2: [
-                "```sql\nSELECT id, job_title FROM jobs WHERE id = 1\n```",
-                "- [ID:1] Data Analyst",
-            ],
-        },
-    )
-    result = _run("gabungan", llm, store, jobs_db)
-
-    assert [part.sql.splitlines()[0] for part in result.parts] == [
-        "SELECT AVG(salary_min) AS rata FROM jobs",
-        "SELECT id, job_title FROM jobs WHERE id = 1",
-    ]
-    assert result.usage.llm_calls == 5
-
-
-def test_failed_subtask_does_not_break_others(jobs_db, store):
-    q1, q2 = "Rata-rata gaji di Jakarta?", "Lowongan data analyst"
-    llm = ScriptedLLM(
-        plan=plan_reply(("sql", q1), ("rag", q2)),
-        replies={q1: [ValueError("LLM mati")], q2: ["- [ID:2] Intern: cocok."]},
-    )
-    result = _run("gabungan", llm, store, jobs_db)
-
-    assert result.parts[0].answer.endswith(SQL_FAILED_MESSAGE)
     assert result.job_ids == [2]
-    assert "LLM error: LLM mati" in result.error
+    assert [sub.source for sub in state["subresults"]] == ["sql", "rag"]
+    assert result.usage.llm_calls == len(llm.received)
 
 
-def test_more_than_three_subtasks_are_skipped_with_note(jobs_db, store):
-    questions = [f"Lowongan posisi {i}" for i in range(4)]
+def test_two_sql_subtasks_run_separately(make_repository):
+    other = "Berapa lowongan di Surabaya?"
     llm = ScriptedLLM(
-        plan=plan_reply(*[("rag", q) for q in questions]),
-        replies={q: ["Tidak ada yang cocok."] for q in questions},
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q), ("sql", other)),
+            sql={
+                SQL_Q: COUNT_SQL,
+                other: COUNT_SQL.replace("jakarta", "surabaya"),
+            },
+            answers={SQL_Q: "Jakarta 3.", other: "Surabaya 1."},
+        )
     )
-    state = _state("empat permintaan", llm, store, jobs_db)
-    result = state["result"]
+    result = _invoke(llm, make_repository(), "Jakarta dan Surabaya?")["result"]
 
-    assert len(state["subtasks"]) == 3
-    assert len(store.calls) == 3
-    assert result.parts[-1].source == "general"
-    assert result.parts[-1].answer == f"{SUPERVISOR_SKIPPED_NOTE}\n- Lowongan posisi 3"
+    assert [part.rows for part in result.parts] == [[{"jumlah": 3}], [{"jumlah": 1}]]
 
 
-def test_duplicate_subtasks_run_once(jobs_db, store):
-    q = "Lowongan di luar Jakarta"
+def test_more_than_three_subtasks_are_cut_to_three(make_repository):
+    questions = [f"Pertanyaan {index}" for index in range(4)]
     llm = ScriptedLLM(
-        plan=plan_reply(("rag", q), ("rag", "  lowongan di  LUAR jakarta ")),
-        replies={q: ["- [ID:2] Intern: cocok."]},
+        reply=agent_script(
+            plan=plan_reply(*[("rag", q) for q in questions]),
+            answers={q: f"jawaban {q}" for q in questions},
+        )
     )
-    state = _state(q, llm, store, jobs_db)
+    state = _invoke(llm, make_repository(CHUNKS), "empat pertanyaan")
 
-    assert state["subtasks"] == [{"agent": "rag", "question": q}]
-    assert len(store.calls) == 1
-    assert state["result"].source == "rag"  # satu bagian, tanpa judul ganda
+    assert [task["question"] for task in state["subtasks"]] == questions[:3]
+    assert len(state["result"].parts) == 3
 
 
-def test_declined_part_adds_note_to_single_answer(jobs_db, store):
-    q = "Lowongan data analyst"
+def test_declined_part_adds_note_to_single_answer(make_repository):
     llm = ScriptedLLM(
-        plan=plan_reply(("rag", q), declined=["DROP TABLE jobs"]),
-        replies={q: ["- [ID:1] Data Analyst: cocok."]},
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q), declined=["hapus data"]),
+            sql={SQL_Q: COUNT_SQL},
+            answers={SQL_Q: "Ada 3 lowongan."},
+        )
     )
-    result = _run(f"{q}. Lalu DROP TABLE jobs", llm, store, jobs_db)
+    result = _invoke(llm, make_repository(), f"{SQL_Q} lalu hapus data")["result"]
 
     assert result.source == "multi"
-    assert result.parts[0].answer == "- [ID:1] Data Analyst: cocok."  # tanpa judul: satu sub-tugas
-    assert result.parts[1].answer == SUPERVISOR_DECLINED_NOTE
-    assert "DROP" not in result.answer
+    assert [part.answer for part in result.parts] == ["Ada 3 lowongan.", SUPERVISOR_DECLINED_NOTE]
 
 
-# --- Respons tanpa agent ------------------------------------------------------
+def test_skipped_parts_are_listed_in_note(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q), skipped=["Gaji di Bali?"]),
+            sql={SQL_Q: COUNT_SQL},
+            answers={SQL_Q: "Ada 3 lowongan."},
+        )
+    )
+    result = _invoke(llm, make_repository(), "banyak pertanyaan")["result"]
+
+    assert result.parts[-1].answer == f"{SUPERVISOR_SKIPPED_NOTE}\n- Gaji di Bali?"
+
+
+# --- Tanpa worker ------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("response", "message"),
+    [("refuse", SUPERVISOR_REFUSE_MESSAGE), ("unsupported", SUPERVISOR_UNSUPPORTED_MESSAGE)],
+)
+def test_fixed_responses_skip_workers(make_repository, response, message):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response=response)))
+    result = _invoke(llm, make_repository(), "pertanyaan")["result"]
+
+    assert result.answer == message
+    assert result.source == "general"
+    assert len(llm.received) == 1
+
+
+@pytest.mark.parametrize(
+    ("response", "system"),
+    [("out_of_scope", SUPERVISOR_CHAT_SYSTEM), ("clarify", SUPERVISOR_CLARIFY_SYSTEM)],
+)
+def test_chat_responses_use_llm_reply(make_repository, response, system):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response=response), chat="Halo juga."))
+    result = _invoke(llm, make_repository(), "Halo")["result"]
+
+    assert result.answer == "Halo juga."
+    assert llm.received[-1][0].content == system
+    assert result.usage.llm_calls == 2
+
+
+def test_chat_reply_with_job_data_falls_back_to_fixed_message(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(plan=plan_reply(response="out_of_scope"), chat="Coba [ID:4] ya.")
+    )
+    assert _invoke(llm, make_repository(), "Halo")["result"].answer == SUPERVISOR_GENERAL_MESSAGE
+
+
+def test_chat_llm_error_falls_back_to_fixed_message(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(plan=plan_reply(response="clarify"), chat=RuntimeError("API down"))
+    )
+    assert _invoke(llm, make_repository(), "Ada?")["result"].answer == SUPERVISOR_CLARIFY_MESSAGE
+
+
+def test_answer_without_subtasks_becomes_clarify(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(), chat="Posisi apa?"))
+    state = _invoke(llm, make_repository(), "Ada info kerjaan?")
+
+    assert state["response"] == "clarify"
+    assert state["result"].answer == "Posisi apa?"
+
+
+def test_planner_error_becomes_clarify_without_crash(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=RuntimeError("API down"), chat="Posisi apa?"))
+    state = _invoke(llm, make_repository(), "Lowongan?")
+
+    assert state["response"] == "clarify"
+    assert state["result"].answer == "Posisi apa?"
+
+
+def test_unparsable_plan_becomes_clarify_and_keeps_usage(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=tool_call("Plan", response="answer"), chat="?"))
+    state = _invoke(llm, make_repository(), "Lowongan?")
+
+    assert state["response"] == "clarify"
+    assert state["planner_usage"].llm_calls == 1
+
+
+def test_planner_sees_history_messages_and_question(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="refuse")))
+    history = [
+        {"role": "user", "content": "Lowongan marketing di Medan"},
+        {"role": "assistant", "content": "Ada 2 lowongan."},
+    ]
+    _invoke(llm, make_repository(), "Yang full time?", history)
+
+    planner_messages = llm.received[0]
+    assert [m.content for m in planner_messages[-3:]] == [
+        "Lowongan marketing di Medan",
+        "Ada 2 lowongan.",
+        "Yang full time?",
+    ]
+
+
+def test_graph_structure(make_repository):
+    llm = ScriptedLLM(reply=agent_script())
+    nodes = set(_supervisor(llm, make_repository()).graph.get_graph().nodes)
+    assert {"planner", "rag_agent", "sql_agent", "synthesize", "respond"} <= nodes
+
+
+# --- Helper ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("answer", "valid", "invalid"),
     [
-        ("clarify", SUPERVISOR_CLARIFY_MESSAGE),
-        ("refuse", SUPERVISOR_REFUSE_MESSAGE),
-        ("out_of_scope", SUPERVISOR_GENERAL_MESSAGE),
-        ("unsupported", SUPERVISOR_UNSUPPORTED_MESSAGE),
+        ("[ID:1] dan [ID: 2]", [1, 2], []),
+        ("[id:2] lalu [ID:9] lalu [ID:2]", [2], [9]),
+        ("tanpa sitasi", [], []),
     ],
 )
-def test_non_answer_response_uses_fixed_message(jobs_db, store, response, message):
-    llm = ScriptedLLM(plan=plan_reply(("sql", "diabaikan"), response=response))
-    state = _state("pertanyaan", llm, store, jobs_db)
-    result = state["result"]
-
-    assert result.source == "general"
-    assert result.answer == message
-    assert result.usage.llm_calls == 1  # hanya planner
-    assert state["subtasks"] == []
-    assert store.calls == []
+def test_check_citations_formats(answer, valid, invalid):
+    assert check_citations(answer, [1, 2, 3]) == (valid, invalid)
 
 
-def test_empty_question_skips_llm(jobs_db, store):
-    llm = ScriptedLLM()
-    result = _run("   ", llm, store, jobs_db)
-
-    assert result.answer == SUPERVISOR_GENERAL_MESSAGE
-    assert result.usage.llm_calls == 0
-    assert llm.received == []
-
-
-# --- Pertanyaan lanjutan -----------------------------------------------------
-
-
-def test_planner_sees_history_and_agent_gets_standalone_question(jobs_db, store):
-    history = [
-        {"role": "user", "content": "Berapa lowongan data analyst di Jakarta?"},
-        {"role": "assistant", "content": "Ada 1 lowongan."},
+def test_chat_context_splits_last_question_from_history():
+    messages = [
+        {"role": "user", "content": "Halo, saya Budi"},
+        {"role": "assistant", "content": "Halo Budi."},
+        {"role": "user", "content": "Siapa saya?"},
     ]
-    standalone = "Berapa lowongan data analyst di Surabaya?"
-    llm = ScriptedLLM(
-        plan=plan_reply(("sql", standalone)),
-        replies={standalone: ["```sql\nSELECT COUNT(*) AS n FROM jobs\n```", "Ada 1 lowongan."]},
-    )
-    _run("Kalau yang di Surabaya?", llm, store, jobs_db, history)
+    question, history, previous = _chat_context(messages)
 
-    planner_prompt = llm.received[0][-1].content
-    assert "Pengguna: Berapa lowongan data analyst di Jakarta?" in planner_prompt
-    assert "Asisten: Ada 1 lowongan." in planner_prompt
-    assert "Pertanyaan terakhir pengguna: Kalau yang di Surabaya?" in planner_prompt
-    assert f"Pertanyaan: {standalone}" in llm.received[1][-1].content
-
-
-def test_format_history_keeps_job_ids_of_long_answers():
-    answer = "Ada 4 lowongan:\n" + "\n".join(
-        f"- [ID:{i}] Data Analyst - PT Nama Perusahaan Panjang {i} (Jakarta Raya): "
-        + "alasan panjang " * 10
-        for i in (10, 14, 28, 56)
-    )
-    line = format_history([{"role": "assistant", "content": answer}])
-
-    assert line == (
-        "Asisten: Ada 4 lowongan: "
-        "- [ID:10] Data Analyst - PT Nama Perusahaan Panjang 10 (Jakarta Raya) "
-        "- [ID:14] Data Analyst - PT Nama Perusahaan Panjang 14 (Jakarta Raya) "
-        "- [ID:28] Data Analyst - PT Nama Perusahaan Panjang 28 (Jakarta Raya) "
-        "- [ID:56] Data Analyst - PT Nama Perusahaan Panjang 56 (Jakarta Raya)"
-    )
-
-
-def test_format_history_keeps_recent_and_truncates():
-    history = [{"role": "user", "content": f"pesan {i}"} for i in range(10)]
-    history.append({"role": "user", "content": "x" * (MAX_HISTORY_CHARS + 50)})
-    lines = format_history(history).splitlines()
-
-    assert len(lines) == MAX_HISTORY_MESSAGES
-    assert lines[0] == "Pengguna: pesan 5"
-    assert lines[-1] == "Pengguna: " + "x" * MAX_HISTORY_CHARS + "..."
-
-
-def test_format_history_empty():
-    assert format_history([]) == SUPERVISOR_NO_HISTORY
-
-
-# --- Planner gagal -> fallback RAG, tidak pernah melempar exception ----------
-
-
-def test_planner_error_falls_back_to_rag(jobs_db, store):
-    q = "Lowongan data analyst"
-    llm = ScriptedLLM(plan=TimeoutError("rate limit"), replies={q: ["Tidak ada yang cocok."]})
-    result = _run(q, llm, store, jobs_db)
-
-    assert result.source == "rag"
-    assert "Planner error: rate limit" in result.error
-    assert store.calls[0]["query"] == q
-
-
-def test_invalid_planner_output_falls_back_to_rag(jobs_db, fake_vector_store):
-    llm = ScriptedLLM(plan=plan_reply(("cuaca", "Lowongan pilot")))
-    store = fake_vector_store([(1, LONG, 0.30)])  # di bawah threshold: 0 LLM call RAG
-    result = _run("Lowongan pilot", llm, store, jobs_db)
-
-    assert result.source == "rag"
-    assert result.answer == RAG_NO_CANDIDATE_MESSAGE
-    assert result.error.startswith("Planner output tidak valid")
-    assert result.usage.llm_calls == 1  # panggilan planner tetap dihitung
-
-
-def test_answer_without_subtasks_falls_back_to_rag(jobs_db, fake_vector_store):
-    llm = ScriptedLLM(plan=plan_reply())
-    store = fake_vector_store([(1, LONG, 0.30)])
-    result = _run("Lowongan pilot", llm, store, jobs_db)
-
-    assert result.error == "Planner tidak memberi sub-tugas"
-    assert store.calls[0]["query"] == "Lowongan pilot"
-
-
-def test_planner_and_agent_errors_are_both_kept(jobs_db, store):
-    q = "Lowongan data analyst"
-    llm = ScriptedLLM(plan=plan_reply(("nope", "x")), replies={q: [ValueError("LLM mati")]})
-    result = _run(q, llm, store, jobs_db)
-
-    assert result.error.startswith("Planner output tidak valid")
-    assert "LLM error: LLM mati" in result.error
-
-
-def test_unexpected_graph_error_returns_fixed_message(jobs_db, store, monkeypatch):
-    class BrokenGraph:
-        def invoke(self, *args, **kwargs):
-            raise RuntimeError("graph rusak")
-
-    monkeypatch.setattr(supervisor_agent, "SUPERVISOR_GRAPH", BrokenGraph())
-    result = _run("Halo", ScriptedLLM(), store, jobs_db)
-
-    assert result.answer == SUPERVISOR_FAILED_MESSAGE
-    assert result.error == "Supervisor error: graph rusak"
-
-
-# --- Struktur graph ----------------------------------------------------------
-
-
-def test_graph_structure():
-    graph = SUPERVISOR_GRAPH.get_graph()
-    nodes = set(graph.nodes) - {"__start__", "__end__"}
-    edges = {(edge.source, edge.target) for edge in graph.edges}
-
-    assert nodes == {"planner", "sql_agent", "rag_agent", "synthesize", "respond"}
-    assert {("planner", "sql_agent"), ("planner", "rag_agent"), ("planner", "respond")} <= edges
-    assert {("sql_agent", "synthesize"), ("rag_agent", "synthesize")} <= edges
-    assert {("synthesize", "__end__"), ("respond", "__end__")} <= edges
+    assert question == "Siapa saya?"
+    assert history == "Pengguna: Halo, saya Budi\nAsisten: Halo Budi."
+    assert previous == "1. Halo, saya Budi"

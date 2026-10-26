@@ -4,15 +4,32 @@ Test memakai database kecil buatan sendiri, bukan data/database.sqlite,
 supaya hasilnya pasti (tidak berubah saat data di-seed ulang) dan cepat.
 """
 
+import itertools
 import sqlite3
+import threading
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
+from langchain_community.utilities import SQLDatabase
 from langchain_core.documents import Document
+from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from pydantic import Field
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import ConfigDict, Field, PrivateAttr
+
+from src.agents.prompts import (
+    RAG_ANSWER_SYSTEM,
+    SQL_ANSWER_SYSTEM,
+    SQL_GENERATION_SYSTEM,
+    SUPERVISOR_PLANNER_SYSTEM,
+)
+from src.repositories.job_repository import JobRepository
+
+USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
 # Disalin dari scripts/seed_database.py agar fixture punya skema yang sama.
 JOBS_DDL = """
@@ -46,7 +63,7 @@ SAMPLE_JOBS = [
      "Membangun REST API dengan Python.", None, None, None, None, "OPEN"),
     (6, "HR Generalist", "PT Zeta", "Jakarta Barat, Jakarta Raya", "Full time",
      "Rekrutmen dan administrasi karyawan.", 7_000_000, 7_000_000, "month", "IDR", "OPEN"),
-]
+]  # fmt: skip
 
 
 @pytest.fixture
@@ -138,3 +155,111 @@ class FakeVectorStore:
 def fake_vector_store():
     """Fixture pabrik stub: ``fake_vector_store([(job_id, teks, skor), ...])``."""
     return FakeVectorStore
+
+
+@pytest.fixture
+def make_repository(jobs_db):
+    """Pabrik ``JobRepository`` di atas ``jobs_db``: ``make_repository([(job_id, teks, skor)])``."""
+
+    def _make(chunks=()) -> JobRepository:
+        return JobRepository(
+            db=SQLDatabase.from_uri(f"sqlite:///{jobs_db}"), vector_db=FakeVectorStore(list(chunks))
+        )
+
+    return _make
+
+
+# --- LLM palsu untuk agent berbasis create_agent dan supervisor --------------
+
+_TOOL_CALL_IDS = itertools.count(1)
+
+
+class ScriptedLLM(BaseChatModel):
+    """LLM palsu yang memilih balasan dari isi pesan, bukan dari urutan panggilan.
+
+    Sub-tugas supervisor berjalan paralel, jadi urutan panggilan antar worker tidak
+    pasti. ``reply`` menerima daftar pesan dan mengembalikan teks, ``AIMessage``
+    (misalnya tool call), atau Exception yang lalu dilempar. Setiap panggilan dicatat
+    di ``received``. Teks dibalas dengan ``usage_metadata`` 10 input + 5 output token.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    reply: Callable[[list[BaseMessage]], Any]
+    received: list[list[BaseMessage]] = Field(default_factory=list)
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+
+    @property
+    def _llm_type(self) -> str:
+        return "scripted"
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        with self._lock:
+            self.received.append(messages)
+            reply = self.reply(messages)
+        if isinstance(reply, Exception):
+            raise reply
+        message = reply if isinstance(reply, AIMessage) else AIMessage(reply, usage_metadata=USAGE)
+        return ChatResult(generations=[ChatGeneration(message=message)])
+
+
+def tool_call(name: str, **args: Any) -> AIMessage:
+    """Balasan LLM berupa satu tool call ``name(**args)`` dengan ID unik."""
+    call = {"name": name, "args": args, "id": f"call-{next(_TOOL_CALL_IDS)}"}
+    return AIMessage(content="", tool_calls=[call], usage_metadata=USAGE)
+
+
+def plan_reply(*subtasks, response="answer", skipped=(), declined=()) -> AIMessage:
+    """Balasan planner: tool call ``Plan``; ``subtasks`` berupa pasangan (agent, pertanyaan)."""
+    return tool_call(
+        "Plan",
+        response=response,
+        subtasks=[{"agent": agent, "question": question} for agent, question in subtasks],
+        skipped=list(skipped),
+        declined=list(declined),
+    )
+
+
+def agent_script(
+    *,
+    plan: Any = None,
+    sql: dict[str, Any] | None = None,
+    answers: dict[str, Any] | None = None,
+    chat: Any = None,
+) -> Callable[[list[BaseMessage]], Any]:
+    """Fungsi ``reply`` untuk ``ScriptedLLM`` yang mengenali setiap jenis prompt.
+
+    Args:
+        plan: Balasan planner (``plan_reply(...)`` atau Exception).
+        sql: ``{pertanyaan: query}``; daftar query dipakai berurutan untuk retry.
+        answers: ``{pertanyaan: jawaban akhir worker}`` setelah tool selesai.
+        chat: Balasan prompt lain (percakapan umum dan klarifikasi).
+
+    Panggilan pertama worker RAG/SQL dibalas tool call ``retrieve_jobs``/``query_jobs``
+    dengan pertanyaan sub-tugas, seperti perilaku model sungguhan.
+    """
+    sql_replies = {
+        question: list(reply) if isinstance(reply, list | tuple) else [reply]
+        for question, reply in (sql or {}).items()
+    }
+    answers = answers or {}
+    tools = {SQL_ANSWER_SYSTEM: "query_jobs", RAG_ANSWER_SYSTEM: "retrieve_jobs"}
+
+    def reply(messages: list[BaseMessage]) -> Any:
+        system = messages[0].content
+        if system == SUPERVISOR_PLANNER_SYSTEM.format(max_subtasks=3):
+            return plan
+        if system.startswith(SQL_GENERATION_SYSTEM.split("{", 1)[0]):
+            question = messages[-1].content.removeprefix("Pertanyaan: ").split("\n", 1)[0]
+            return sql_replies[question].pop(0)
+        if system in tools:
+            question = messages[1].content
+            if isinstance(messages[-1], ToolMessage):
+                return answers[question]
+            return tool_call(tools[system], question=question)
+        return chat
+
+    return reply

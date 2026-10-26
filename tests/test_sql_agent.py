@@ -1,148 +1,120 @@
-"""SQL agent lengkap dengan LLM palsu (gratis, tanpa API key)."""
+"""SqlAgent dengan LLM palsu (gratis, tanpa API key): tool ``query_jobs`` dan agent lengkap."""
 
 import re
 import sqlite3
 from contextlib import closing
 
+from conftest import ScriptedLLM, agent_script
+from langchain_core.messages import HumanMessage, ToolMessage
+
 from src.agents.prompts import (
     SQL_ANSWER_SYSTEM,
-    SQL_EMPTY_RESULT_MESSAGE,
-    SQL_FAILED_MESSAGE,
     SQL_GENERATION_SYSTEM,
-    SQL_NO_SALARY_NOTE,
-    SQL_NOT_RELEVANT_MESSAGE,
     SQL_NOT_RELEVANT_TOKEN,
-    SQL_TRUNCATED_NOTE,
 )
-from src.agents.sql_agent import execute_sql, run_sql_agent, strip_invalid_citations, validate_sql
+from src.agents.sql_agent import DEFAULT_MAX_ROWS, SqlAgent
+
+COUNT_JAKARTA = "SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'"
 
 
-def _sql_block(sql: str) -> str:
-    return f"```sql\n{sql}\n```"
+def _count_jobs(db_path) -> int:
+    with closing(sqlite3.connect(db_path)) as db:
+        return db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 
 
-def test_success_uses_two_llm_calls(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(location) LIKE '%jakarta%'"),
-        "Ada 3 lowongan di Jakarta.",
-    )
-    result = run_sql_agent("Berapa lowongan di Jakarta?", llm=llm, db_path=jobs_db)
+# --- Tool query_jobs ---------------------------------------------------------
 
-    assert result.answer == "Ada 3 lowongan di Jakarta."
+
+def test_query_jobs_success_uses_one_llm_call(make_repository, fake_llm):
+    llm = fake_llm(COUNT_JAKARTA)
+    content, result = SqlAgent(llm, make_repository()).query_jobs("Berapa lowongan di Jakarta?")
+
+    assert result.sql == f"{COUNT_JAKARTA}\nLIMIT 50"
     assert result.rows == [{"jumlah": 3}]
-    assert result.sql.endswith("LIMIT 50")
     assert result.error is None
-    assert result.usage.llm_calls == 2
+    assert content == result.model_dump_json(exclude={"usage"})
+    assert len(llm.received) == 1
+
+
+def test_generation_calls_are_recorded_in_artifact_usage(make_repository, fake_llm):
+    llm = fake_llm("SELECT kolom_palsu FROM jobs", "SELECT COUNT(*) AS jumlah FROM jobs")
+    content, result = SqlAgent(llm, make_repository()).query_jobs("Total lowongan?")
+
+    assert [call.step for call in result.usage.calls] == ["sql_generate", "sql_retry"]
     assert result.usage.total_tokens == 30
-    assert [call.step for call in result.usage.calls] == ["sql_generate", "sql_answer"]
+    assert "usage" not in content
 
 
-def test_answer_prompt_contains_query_result(jobs_db, fake_llm):
-    llm = fake_llm(_sql_block("SELECT COUNT(*) AS jumlah FROM jobs"), "Ada 6 lowongan.")
-    run_sql_agent("Total lowongan?", llm=llm, db_path=jobs_db)
+def test_generation_prompt_has_rules_and_actual_schema(make_repository, fake_llm):
+    llm = fake_llm(COUNT_JAKARTA)
+    SqlAgent(llm, make_repository()).query_jobs("Berapa lowongan di Jakarta?")
 
-    answer_prompt = llm.received[1][-1].content
-    assert '{"jumlah": 6}' in answer_prompt
+    system, user = llm.received[0]
+    assert system.content.startswith(SQL_GENERATION_SYSTEM.format(max_rows=DEFAULT_MAX_ROWS))
+    assert "CREATE TABLE jobs" in system.content.split("Skema aktual dari database:")[1]
+    assert user.content == "Pertanyaan: Berapa lowongan di Jakarta?"
 
 
-def test_returns_job_ids_from_rows(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT id, job_title FROM jobs WHERE lower(job_title) LIKE '%data analyst%'"),
-        "Ada 2 lowongan [ID:1] [ID:2].",
-    )
-    result = run_sql_agent("Lowongan data analyst?", llm=llm, db_path=jobs_db)
+def test_markdown_fence_is_removed_before_execution(make_repository, fake_llm):
+    llm = fake_llm(f"```sql\n{COUNT_JAKARTA}\n```")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Berapa lowongan di Jakarta?")
+    assert result.rows == [{"jumlah": 3}]
+
+
+def test_returns_job_ids_from_rows(make_repository, fake_llm):
+    llm = fake_llm("SELECT id, job_title FROM jobs WHERE lower(job_title) LIKE '%data analyst%'")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Lowongan data analyst?")
     assert result.job_ids == [1, 2]
 
 
-def test_title_stem_is_applied_before_execution(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT id FROM jobs WHERE lower(job_title) LIKE '%graphic designer%'"), "ok"
-    )
-    result = run_sql_agent("Lowongan graphic designer", llm=llm, db_path=jobs_db)
-
-    assert "LIKE '%graphic design%'" in result.sql
-    assert result.rows == [{"id": 3}]
-    assert result.sql in llm.received[1][-1].content
+def test_rows_are_capped_at_max_rows(jobs_db, make_repository, fake_llm):
+    llm = fake_llm("SELECT a.id FROM jobs a, jobs b, jobs c LIMIT 1000")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Semua kombinasi")
+    assert len(result.rows) == DEFAULT_MAX_ROWS
 
 
-def test_retry_once_after_sql_error(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT kolom_palsu FROM jobs"),
-        _sql_block("SELECT COUNT(*) AS jumlah FROM jobs"),
-        "Ada 6 lowongan.",
-    )
-    result = run_sql_agent("Total lowongan?", llm=llm, db_path=jobs_db)
+def test_retry_once_after_sql_error(make_repository, fake_llm):
+    llm = fake_llm("SELECT kolom_palsu FROM jobs", "SELECT COUNT(*) AS jumlah FROM jobs")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Total lowongan?")
 
-    assert result.answer == "Ada 6 lowongan."
+    assert result.rows == [{"jumlah": 6}]
     assert result.error is None
-    assert result.usage.llm_calls == 3
     retry_prompt = llm.received[1][-1].content
-    assert "kolom_palsu" in retry_prompt
+    assert "SELECT kolom_palsu FROM jobs" in retry_prompt
     assert "no such column" in retry_prompt
 
 
-def test_gives_up_after_two_failures(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT kolom_palsu FROM jobs"),
-        _sql_block("SELECT kolom_lain FROM jobs"),
-        "TIDAK BOLEH DIPANGGIL",
-    )
-    result = run_sql_agent("Total lowongan?", llm=llm, db_path=jobs_db)
+def test_gives_up_after_two_failures(make_repository, fake_llm):
+    llm = fake_llm("SELECT kolom_palsu FROM jobs", "SELECT kolom_lain FROM jobs")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Total lowongan?")
 
-    assert result.answer == SQL_FAILED_MESSAGE
+    assert result.rows == []
     assert "no such column" in result.error
-    assert result.usage.llm_calls == 2
+    assert len(llm.received) == 2
 
 
-def test_llm_refusal_text_triggers_retry(jobs_db, fake_llm):
-    llm = fake_llm(
-        "Maaf, saya tidak bisa membuat query.",
-        _sql_block("SELECT COUNT(*) AS jumlah FROM jobs"),
-        "Ada 6 lowongan.",
-    )
-    result = run_sql_agent("Total lowongan?", llm=llm, db_path=jobs_db)
-    assert result.answer == "Ada 6 lowongan."
-    assert result.usage.llm_calls == 3
+def test_llm_refusal_text_triggers_retry(make_repository, fake_llm):
+    llm = fake_llm("Maaf, saya tidak bisa.", "SELECT COUNT(*) AS jumlah FROM jobs")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Total lowongan?")
+
+    assert result.rows == [{"jumlah": 6}]
+    assert "SELECT atau WITH" in llm.received[1][-1].content
 
 
-def test_write_query_from_llm_never_changes_data(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("DELETE FROM jobs"),
-        _sql_block("WITH x AS (SELECT 1) DELETE FROM jobs"),
-    )
-    result = run_sql_agent("Hapus semua lowongan", llm=llm, db_path=jobs_db)
+def test_write_query_from_llm_never_changes_data(jobs_db, make_repository, fake_llm):
+    llm = fake_llm("DELETE FROM jobs", "WITH x AS (SELECT 1) DELETE FROM jobs")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Hapus semua lowongan")
 
-    assert result.answer == SQL_FAILED_MESSAGE
-    with closing(sqlite3.connect(jobs_db)) as db:
-        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 6
+    assert result.rows == [] and result.error is not None
+    assert _count_jobs(jobs_db) == 6
 
 
-def test_empty_result_skips_answer_llm(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT id FROM jobs WHERE lower(location) LIKE '%papua%'"),
-        "TIDAK BOLEH DIPANGGIL",
-    )
-    result = run_sql_agent("Lowongan di Papua?", llm=llm, db_path=jobs_db)
-
-    assert result.answer == SQL_EMPTY_RESULT_MESSAGE
-    assert result.usage.llm_calls == 1
-
-
-def test_llm_error_returns_fixed_message(jobs_db, fake_llm):
-    llm = fake_llm(RuntimeError("API down"))
-    result = run_sql_agent("Total lowongan?", llm=llm, db_path=jobs_db)
-
-    assert result.answer == SQL_FAILED_MESSAGE
-    assert "API down" in result.error
-    assert result.usage.llm_calls == 0
-
-
-def test_not_relevant_question_stops_after_one_call(jobs_db, fake_llm):
+def test_not_relevant_question_stops_after_one_call(make_repository, fake_llm):
     llm = fake_llm(SQL_NOT_RELEVANT_TOKEN, "TIDAK BOLEH DIPANGGIL")
-    result = run_sql_agent("Hapus semua data lowongan", llm=llm, db_path=jobs_db)
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Hapus semua data lowongan")
 
-    assert result.answer == SQL_NOT_RELEVANT_MESSAGE
-    assert result.error is None
+    assert result.error == SQL_NOT_RELEVANT_TOKEN
+    assert result.sql is None and result.rows == []
     assert result.usage.llm_calls == 1
 
 
@@ -150,130 +122,43 @@ def test_not_relevant_token_is_written_in_prompt():
     assert SQL_NOT_RELEVANT_TOKEN in SQL_GENERATION_SYSTEM
 
 
-def test_long_text_is_truncated_only_in_prompt(jobs_db, fake_llm):
-    # hex(zeroblob(300)) menghasilkan teks 600 karakter "0".
-    llm = fake_llm(_sql_block("SELECT id, hex(zeroblob(300)) AS teks FROM jobs WHERE id = 1"), "ok")
-    result = run_sql_agent("Tampilkan teks panjang", llm=llm, db_path=jobs_db)
-
-    answer_prompt = llm.received[1][-1].content
-    assert "0" * 201 not in answer_prompt
-    assert len(result.rows[0]["teks"]) == 600
+# --- Agent lengkap (create_agent) --------------------------------------------
 
 
-def test_truncated_note_is_added_by_code_only_when_rows_hit_limit(jobs_db, fake_llm):
-    llm = fake_llm(_sql_block("SELECT id FROM jobs"), "Daftar lowongan.")
-    result = run_sql_agent("Semua lowongan", llm=llm, db_path=jobs_db, max_rows=2)
-
-    assert result.answer == "Daftar lowongan.\n\n" + SQL_TRUNCATED_NOTE.format(max_rows=2)
-    assert "terpotong" not in llm.received[1][-1].content
-
-
-def test_no_truncated_note_when_rows_below_limit(jobs_db, fake_llm):
-    llm = fake_llm(_sql_block("SELECT id FROM jobs WHERE id = 1"), "Satu lowongan.")
-    result = run_sql_agent("Lowongan ID 1", llm=llm, db_path=jobs_db)
-
-    assert result.answer == "Satu lowongan."
-
-
-_SALARY_LIST_SQL = (
-    "SELECT id, job_title, company_name, location, salary_min, salary_max, "
-    "(SELECT COUNT(*) FROM jobs WHERE salary_min IS NULL) AS lowongan_tanpa_gaji "
-    "FROM jobs WHERE salary_max > 9000000 ORDER BY salary_max DESC"
-)
-
-
-def test_rows_missing_from_answer_are_appended_by_code(jobs_db, fake_llm):
-    # Hasil: ID 4 (15-20 juta) dan ID 1 (8-10 juta); LLM membuang ID 1.
-    llm = fake_llm(
-        _sql_block(_SALARY_LIST_SQL),
-        "Lowongan bergaji di atas 9 juta:\n- [ID:4] Marketing Manager - PT Delta (Jakarta Raya)",
+def test_agent_calls_tool_then_answers_from_its_result(make_repository):
+    question = "Berapa lowongan di Jakarta?"
+    llm = ScriptedLLM(
+        reply=agent_script(sql={question: COUNT_JAKARTA}, answers={question: "Ada 3 lowongan."})
     )
-    result = run_sql_agent("Lowongan gaji di atas 9 juta", llm=llm, db_path=jobs_db)
-
-    assert result.answer.splitlines()[2] == (
-        "- [ID:1] Data Analyst - PT Alpha (Jakarta Selatan, Jakarta Raya): "
-        "Rp8.000.000 - Rp10.000.000"
+    state = (
+        SqlAgent(llm, make_repository())
+        .create_sql_agent()
+        .invoke({"messages": [HumanMessage(question)]})
     )
 
-
-def test_no_salary_sentence_comes_from_column_not_llm(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block(_SALARY_LIST_SQL),
-        "- [ID:4] A\n- [ID:1] B\n\n1 lowongan lain tidak mencantumkan gaji.",
-    )
-    result = run_sql_agent("Lowongan gaji di atas 9 juta", llm=llm, db_path=jobs_db)
-
-    assert result.answer == "- [ID:4] A\n- [ID:1] B\n\n" + SQL_NO_SALARY_NOTE.format(count=2)
-
-
-def test_salary_count_sentence_removed_from_job_list(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block(_SALARY_LIST_SQL),
-        "- [ID:4] A\n- [ID:1] B\n\nX dari 4 lowongan mencantumkan gaji.\n\n2 lowongan lain tidak "
-        "mencantumkan gaji.",
-    )
-    result = run_sql_agent("Lowongan gaji di atas 9 juta", llm=llm, db_path=jobs_db)
-
-    assert result.answer == "- [ID:4] A\n- [ID:1] B\n\n" + SQL_NO_SALARY_NOTE.format(count=2)
+    assert state["messages"][-1].content == "Ada 3 lowongan."
+    tool_message = next(m for m in state["messages"] if isinstance(m, ToolMessage))
+    assert tool_message.name == "query_jobs"
+    assert tool_message.artifact.rows == [{"jumlah": 3}]
+    assert [messages[0].content == SQL_ANSWER_SYSTEM for messages in llm.received] == [
+        True,
+        False,
+        True,
+    ]
 
 
-def test_salary_count_sentence_kept_for_salary_statistics(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block(
-            "SELECT AVG(salary_min) AS rata_gaji_min, AVG(salary_max) AS rata_gaji_max, "
-            "COUNT(salary_min) AS lowongan_dengan_gaji, COUNT(*) AS total_lowongan FROM jobs"
-        ),
-        "Rata-rata Rp10.000.000 - Rp13.000.000.\n\n3 dari 6 lowongan mencantumkan gaji.",
-    )
-    result = run_sql_agent("Rata-rata gaji semua lowongan", llm=llm, db_path=jobs_db)
-
-    assert result.answer.endswith("3 dari 6 lowongan mencantumkan gaji.")
-
-
-def test_answer_without_list_or_zero_no_salary_is_unchanged(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block(
-            "SELECT id, job_title, (SELECT COUNT(*) FROM jobs WHERE id = 0) AS lowongan_tanpa_gaji "
-            "FROM jobs WHERE id IN (1, 3)"
-        ),
-        "Ada dua lowongan.",
-    )
-    result = run_sql_agent("Lowongan ID 1 dan 3", llm=llm, db_path=jobs_db)
-
-    assert result.answer == "Ada dua lowongan."
-
-
-# --- Guard sitasi dan contoh di prompt ---------------------------------------
-
-
-def test_citation_not_in_query_result_is_removed(jobs_db, fake_llm):
-    llm = fake_llm(
-        _sql_block("SELECT salary_min, salary_max FROM jobs WHERE id = 1"),
-        "- [ID:123] Data Analyst - PT Alpha (Jakarta): Rp8.000.000 - Rp10.000.000",
-    )
-    result = run_sql_agent("Gaji lowongan dengan ID 1?", llm=llm, db_path=jobs_db)
-
-    assert result.answer == "- Data Analyst - PT Alpha (Jakarta): Rp8.000.000 - Rp10.000.000"
-    assert result.job_ids == []
-    assert result.error == "ID di luar hasil query dibuang: [123]"
-
-
-def test_strip_invalid_citations_keeps_valid_ids():
-    answer = "- [ID:1] A\n- [ID: 9] B\n- [ID:2] C\n[ID:9] lagi"
-    cleaned, invalid = strip_invalid_citations(answer, [1, 2])
-
-    assert cleaned == "- [ID:1] A\n- B\n- [ID:2] C\nlagi"
-    assert invalid == [9]
+# --- Prompt ------------------------------------------------------------------
 
 
 def test_answer_prompt_has_no_numeric_example_id():
     assert not re.search(r"\[ID:\s*\d+\]", SQL_ANSWER_SYSTEM)
 
 
-def test_generation_prompt_examples_run_on_database(jobs_db):
+def test_generation_prompt_examples_run_on_database(make_repository):
     """Contoh query di prompt harus valid: LLM meniru contoh apa adanya."""
     examples = re.findall(r"```sql\n(.*?)\n```", SQL_GENERATION_SYSTEM, re.DOTALL)
+    agent = SqlAgent(llm=None, job_repository=make_repository())
 
     assert len(examples) == 7
     for sql in examples:
-        execute_sql(validate_sql(sql), jobs_db)
+        agent.job_repository.execute_sql(agent.validate_sql(sql), max_rows=DEFAULT_MAX_ROWS)

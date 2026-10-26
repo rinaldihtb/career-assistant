@@ -2,7 +2,7 @@
 
     make eval ARGS="--label baseline"     semua kasus (butuh .env)
     make eval ARGS="--only T3 T6b-01"     sebagian kasus (prefix kategori atau ID)
-    make eval ARGS="--rescore tests/eval/results/baseline-20261017-1952.json"
+    make eval ARGS="--rescore tests/eval/results/<file>.json"
                                           nilai ulang hasil lama dengan queries.yaml terbaru,
                                           tanpa LLM (dipakai saat set eval dikoreksi)
 
@@ -11,8 +11,9 @@ supervisor -> nilai dengan ``evaluation.checks`` -> cetak dan simpan JSON di
 tests/eval/results/. File JSON menyimpan commit dan hash file supervisor/prompt,
 supaya baseline dan hasil perbaikan bisa dibandingkan secara jujur.
 
-Graph dipanggil langsung (bukan ``run_supervisor``) karena penilaian butuh state
-lengkap: rute dan pertanyaan mandiri per sub-tugas, bukan hanya jawaban akhir.
+Input graph sama dengan halaman Asisten: ``messages`` berisi riwayat kasus lalu
+pertanyaannya. State akhir (``subtasks``, ``subresults``, ``result``) dibaca utuh
+karena penilaian butuh rute dan pertanyaan mandiri per sub-tugas, bukan hanya jawaban.
 """
 
 import argparse
@@ -31,7 +32,6 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from src.agents.supervisor_agent import SUPERVISOR_GRAPH, SupervisorContext
 from src.evaluation.checks import (
     RunOutput,
     cited_ids,
@@ -46,7 +46,12 @@ from src.repositories.job_repository import connect_readonly, get_jobs_by_ids
 
 CASES_PATH = Path("tests/eval/queries.yaml")
 RESULTS_DIR = Path("tests/eval/results")
-TRACKED_FILES = ("src/agents/supervisor_agent.py", "src/agents/prompts.py")
+TRACKED_FILES = (
+    "src/agents/supervisor_agent_graph.py",
+    "src/agents/sql_agent.py",
+    "src/agents/rag_agent.py",
+    "src/agents/prompts.py",
+)
 
 
 def load_cases(path: Path = CASES_PATH, only: Sequence[str] = ()) -> list[dict[str, Any]]:
@@ -102,20 +107,30 @@ def score(
     }
 
 
-def run_case(
-    case: Mapping[str, Any], context: SupervisorContext, graph: Any = SUPERVISOR_GRAPH
-) -> dict[str, Any]:
+def graph_input(case: Mapping[str, Any]) -> dict[str, list[dict[str, str]]]:
+    """Riwayat kasus (format ``st.session_state``) diikuti pertanyaan kasus sebagai pesan."""
+    history = [
+        {"role": message["role"], "content": message["content"]}
+        for message in case.get("history", [])
+    ]
+    return {"messages": [*history, {"role": "user", "content": case["question"]}]}
+
+
+def run_case(case: Mapping[str, Any], graph: Any, db_path: str | Path) -> dict[str, Any]:
     """Jalankan satu kasus dan kembalikan catatan hasil yang siap disimpan ke JSON.
+
+    Args:
+        case: Satu kasus dari queries.yaml.
+        graph: Graph supervisor yang punya ``invoke`` (``SupervisorAgent.graph``).
+        db_path: SQLite untuk gold SQL dan detail lowongan yang dikutip.
 
     Exception dari graph tidak menghentikan eval: kasus dicatat gagal dengan
     pesan error-nya, lalu kasus berikutnya tetap jalan.
     """
-    compute_gold(case, context.db_path)  # gold SQL rusak harus gagal sebelum memanggil LLM
+    compute_gold(case, db_path)  # gold SQL rusak harus gagal sebelum memanggil LLM
     start = time.perf_counter()
     try:
-        state = graph.invoke(
-            {"question": case["question"], "history": case.get("history", [])}, context=context
-        )
+        state = graph.invoke(graph_input(case))
         run = extract_run(state)
         crashed = None
     except Exception as exc:  # noqa: BLE001 - satu kasus rusak tidak boleh menghentikan eval
@@ -123,7 +138,7 @@ def run_case(
         crashed = f"{type(exc).__name__}: {exc}"
     seconds = time.perf_counter() - start
 
-    record = score(case, run, context.db_path, crashed=crashed is not None)
+    record = score(case, run, db_path, crashed=crashed is not None)
     return {
         **record,
         "llm_calls": run.usage.llm_calls,
@@ -274,16 +289,15 @@ def main() -> None:
         rescore_file(args, started)
         return
     load_dotenv()
-    from src.config.database import VECTOR_DB  # import di sini: butuh .env
-    from src.config.llm import LLM_MODEL
+    from src.containers import get_supervisor_agent  # import di sini: butuh .env
 
+    graph = get_supervisor_agent().graph
     db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
-    context = SupervisorContext(llm=LLM_MODEL, vector_store=VECTOR_DB, db_path=db_path)
     cases = load_cases(args.cases, args.only)
 
     records = []
     for case in cases:
-        record = run_case(case, context)
+        record = run_case(case, graph, db_path)
         print_record(record)
         records.append(record)
     meta = run_metadata(args.label, started, args.cases)

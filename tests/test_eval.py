@@ -13,11 +13,12 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
-from conftest import RecordingFakeChatModel
-from langchain_core.messages import AIMessage
+from conftest import ScriptedLLM, agent_script, plan_reply
 
-from src.agents.prompts import SUPERVISOR_GENERAL_MESSAGE
-from src.agents.supervisor_agent import SupervisorContext
+from src.agents.prompts import SUPERVISOR_REFUSE_MESSAGE
+from src.agents.rag_agent import RagAgent
+from src.agents.sql_agent import SqlAgent
+from src.agents.supervisor_agent_graph import SupervisorAgent
 from src.evaluation.checks import (
     RunOutput,
     check_rag,
@@ -31,7 +32,7 @@ from src.evaluation.checks import (
     run_checks,
     split_citations,
 )
-from src.evaluation.run_eval import load_cases, rescore_record, run_case, summarize
+from src.evaluation.run_eval import graph_input, load_cases, rescore_record, run_case, summarize
 from src.models.agent import AgentResult
 
 CASES_PATH = Path(__file__).parent / "eval" / "queries.yaml"
@@ -57,7 +58,6 @@ CHECK_KEYS = {
     "standalone_none",
 }
 RESPONSES = {"answer", "clarify", "refuse", "out_of_scope", "unsupported"}
-USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
 
 
 # --- Set eval ----------------------------------------------------------------
@@ -266,33 +266,6 @@ def test_extract_run_multi_subtask_state():
 # --- run_case ujung ke ujung (LLM palsu) -------------------------------------
 
 
-class FakeToolCallingLLM(RecordingFakeChatModel):
-    """LLM palsu yang mendukung ``with_structured_output`` (pola test_supervisor.py)."""
-
-    def bind_tools(self, tools, **kwargs):
-        return self
-
-
-def _llm(*replies):
-    def _replies():
-        for reply in replies:
-            yield reply if isinstance(reply, AIMessage) else AIMessage(reply, usage_metadata=USAGE)
-
-    return FakeToolCallingLLM(messages=_replies())
-
-
-def _plan(response, *subtasks):
-    args = {
-        "response": response,
-        "subtasks": [{"agent": agent, "question": question} for agent, question in subtasks],
-        "skipped": [],
-        "declined": [],
-    }
-    return AIMessage(
-        content="", tool_calls=[{"name": "Plan", "args": args, "id": "1"}], usage_metadata=USAGE
-    )
-
-
 SQL_CASE = {
     "id": "X-01",
     "category": "X",
@@ -300,39 +273,68 @@ SQL_CASE = {
     "expected": {"response": "answer", "agents": ["sql"]},
     "checks": {"sql_values": ["SELECT COUNT(*) FROM jobs WHERE lower(location) LIKE '%jakarta%'"]},
 }
+COUNT_SQL = "SELECT COUNT(*) AS n FROM jobs WHERE lower(location) LIKE '%jakarta%'"
 
 
-def test_run_case_passes_correct_sql_answer(jobs_db, fake_vector_store):
-    llm = _llm(
-        _plan("answer", ("sql", "Berapa lowongan di Jakarta?")),
-        "```sql\nSELECT COUNT(*) AS n FROM jobs WHERE lower(location) LIKE '%jakarta%'\n```",
-        "Ada 3 lowongan di Jakarta.",
+def _graph(make_repository, **script):
+    llm = ScriptedLLM(reply=agent_script(**script))
+    repository = make_repository()
+    return SupervisorAgent(
+        llm=llm,
+        job_repository=repository,
+        rag_agent=RagAgent(llm, repository).create_rag_agent(),
+        sql_agent=SqlAgent(llm, repository).create_sql_agent(),
+    ).graph
+
+
+def _sql_graph(make_repository, answer="Ada 3 lowongan di Jakarta."):
+    question = SQL_CASE["question"]
+    return _graph(
+        make_repository,
+        plan=plan_reply(("sql", question)),
+        sql={question: COUNT_SQL},
+        answers={question: answer},
     )
-    context = SupervisorContext(llm=llm, vector_store=fake_vector_store([]), db_path=jobs_db)
-    record = run_case(SQL_CASE, context)
+
+
+def test_graph_input_puts_history_before_question():
+    case = {
+        "question": "Kalau di Surabaya?",
+        "history": [{"role": "user", "content": "Lowongan DA di Jakarta"}],
+    }
+    assert graph_input(case) == {
+        "messages": [
+            {"role": "user", "content": "Lowongan DA di Jakarta"},
+            {"role": "user", "content": "Kalau di Surabaya?"},
+        ]
+    }
+
+
+def test_run_case_passes_correct_sql_answer(jobs_db, make_repository):
+    record = run_case(SQL_CASE, _sql_graph(make_repository), jobs_db)
 
     assert record["passed"] and record["route_ok"]
-    assert record["llm_calls"] == 3 and record["within_budget"]
-    assert record["total_tokens"] == 45
+    assert record["standalone"] == [SQL_CASE["question"]]
+    assert record["llm_calls"] == 4 and record["within_budget"]
+    assert record["total_tokens"] == 60
+    assert record["sql"] == [f"{COUNT_SQL}\nLIMIT 50"]
 
 
-def test_run_case_fails_wrong_number_and_route(jobs_db, fake_vector_store):
-    llm = _llm(_plan("out_of_scope"))
-    context = SupervisorContext(llm=llm, vector_store=fake_vector_store([]), db_path=jobs_db)
-    record = run_case(SQL_CASE, context)
+def test_run_case_fails_wrong_number_and_route(jobs_db, make_repository):
+    graph = _graph(make_repository, plan=plan_reply(response="refuse"))
+    record = run_case(SQL_CASE, graph, jobs_db)
 
-    assert record["answer"] == SUPERVISOR_GENERAL_MESSAGE
+    assert record["answer"] == SUPERVISOR_REFUSE_MESSAGE
     assert not record["passed"] and not record["route_ok"]
     assert record["checks"][0]["detail"] == "tidak ada di jawaban: [3]"
 
 
-def test_run_case_records_graph_exception(jobs_db, fake_vector_store):
+def test_run_case_records_graph_exception(jobs_db):
     class BrokenGraph:
         def invoke(self, *args, **kwargs):
             raise RuntimeError("graph rusak")
 
-    context = SupervisorContext(llm=_llm(), vector_store=fake_vector_store([]), db_path=jobs_db)
-    record = run_case(SQL_CASE, context, graph=BrokenGraph())
+    record = run_case(SQL_CASE, BrokenGraph(), jobs_db)
 
     assert not record["passed"]
     assert record["error"] == "RuntimeError: graph rusak"
@@ -367,14 +369,8 @@ def test_summarize_counts():
     assert summary["by_category"]["T3"] == {"cases": 1, "passed": 0, "route_ok": 0}
 
 
-def test_rescore_record_reuses_answer_and_cost(jobs_db, fake_vector_store):
-    llm = _llm(
-        _plan("answer", ("sql", "Berapa lowongan di Jakarta?")),
-        "```sql\nSELECT COUNT(*) AS n FROM jobs WHERE lower(location) LIKE '%jakarta%'\n```",
-        "Ada 3 lowongan di Jakarta.",
-    )
-    context = SupervisorContext(llm=llm, vector_store=fake_vector_store([]), db_path=jobs_db)
-    original = run_case(SQL_CASE, context)
+def test_rescore_record_reuses_answer_and_cost(jobs_db, make_repository):
+    original = run_case(SQL_CASE, _sql_graph(make_repository), jobs_db)
 
     same = rescore_record(SQL_CASE, original, jobs_db)
     assert {k: same[k] for k in original} == original  # kasus sama: hasil identik
@@ -382,7 +378,7 @@ def test_rescore_record_reuses_answer_and_cost(jobs_db, fake_vector_store):
     stricter = {**SQL_CASE, "checks": {**SQL_CASE["checks"], "answer_any": ["Bandung"]}}
     rescored = rescore_record(stricter, original, jobs_db)
     assert not rescored["passed"]
-    assert rescored["llm_calls"] == 3 and rescored["total_tokens"] == 45  # biaya tidak berubah
+    assert rescored["llm_calls"] == 4 and rescored["total_tokens"] == 60  # biaya tidak berubah
 
 
 def test_rescore_keeps_crashed_case_failed(jobs_db):

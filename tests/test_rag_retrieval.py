@@ -1,8 +1,7 @@
-"""Retrieval RAG agent (Tahap 4): repository, deteksi lokasi, dan pencarian.
+"""Retrieval RAG: repository, deteksi lokasi, dan pencarian, tanpa API key.
 
-Semua test berjalan tanpa API key. Vector store memakai stub dari conftest,
-kecuali satu test yang memakai Qdrant in-memory asli untuk membuktikan
-bentuk filter ``metadata.job_id`` diterima Qdrant.
+Vector store memakai stub dari conftest, kecuali satu test yang memakai Qdrant
+in-memory asli untuk membuktikan bentuk filter ``metadata.job_id`` diterima Qdrant.
 """
 
 import pytest
@@ -10,51 +9,66 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import DeterministicFakeEmbedding
 from langchain_qdrant import QdrantVectorStore
 
-from src.agents.rag_agent import (
-    allowed_job_ids,
-    build_job_id_filter,
-    build_place_index,
-    detect_places,
-    remove_places,
-    retrieve_jobs,
-    split_excluded_places,
-)
-from src.repositories.job_repository import get_job_locations, get_jobs_by_ids
+from src.agents.rag_agent import CANDIDATE_K, RagAgent
+from src.repositories.job_repository import JobRepository
 
-# --- job_repository ----------------------------------------------------------
+# Teks chunk dibuat >= MIN_CHUNK_CHARS (40) agar tidak terbuang sebagai judul bagian.
+CHUNKS = [
+    (1, "Menganalisis data penjualan memakai SQL dan Python", 0.62),
+    (1, "Membuat laporan mingguan untuk tim manajemen", 0.58),  # chunk kedua job 1: dibuang
+    (2, "Membantu cleaning data dan membuat dashboard harian", 0.55),
+    (6, "Mengelola rekrutmen dan administrasi karyawan", 0.47),
+    (5, "Membangun REST API dengan Python dan PostgreSQL", 0.44),  # di bawah threshold 0,45
+    (3, "Membuat materi visual untuk kampanye media sosial", 0.30),
+]
+LONG = "teks chunk yang cukup panjang untuk lolos batas minimal"
 
 
-def test_get_jobs_by_ids_keeps_input_order(jobs_db):
-    jobs = get_jobs_by_ids(jobs_db, [5, 1, 3])
+def _agent(repository: JobRepository) -> RagAgent:
+    return RagAgent(llm=None, job_repository=repository)
+
+
+def _retrieve(repository: JobRepository, question: str, **kwargs):
+    return _agent(repository).retrieve_jobs(question, **kwargs)[1]
+
+
+# --- JobRepository -----------------------------------------------------------
+
+
+def test_get_jobs_by_ids_keeps_input_order(make_repository):
+    jobs = make_repository().get_jobs_by_ids([5, 1, 3])
     assert [job["id"] for job in jobs] == [5, 1, 3]
     assert jobs[1]["job_title"] == "Data Analyst"
 
 
-def test_get_jobs_by_ids_skips_missing_and_duplicates(jobs_db):
-    jobs = get_jobs_by_ids(jobs_db, [2, 999, 2])
-    assert [job["id"] for job in jobs] == [2]
+def test_get_jobs_by_ids_skips_missing_and_duplicates(make_repository):
+    assert [job["id"] for job in make_repository().get_jobs_by_ids([2, 999, 2])] == [2]
 
 
-def test_get_jobs_by_ids_empty_input_does_not_open_db(tmp_path):
-    assert get_jobs_by_ids(tmp_path / "tidak_ada.sqlite", []) == []
+def test_get_jobs_by_ids_empty_input(make_repository):
+    assert make_repository().get_jobs_by_ids([]) == []
 
 
-def test_get_jobs_by_ids_excludes_seeding_timestamps(jobs_db):
-    job = get_jobs_by_ids(jobs_db, [1])[0]
-    assert "created_at" not in job
-    assert "job_description" in job
+def test_get_jobs_by_ids_includes_description(make_repository):
+    job = make_repository().get_jobs_by_ids([1])[0]
+    assert job["job_description"] == "Analisis data penjualan dengan SQL dan Python."
 
 
-def test_get_job_locations_returns_all_rows(jobs_db):
-    assert len(get_job_locations(jobs_db)) == 6
+def test_get_job_locations_returns_all_rows(make_repository):
+    assert len(make_repository().get_job_locations()) == 6
 
 
 # --- Deteksi lokasi ----------------------------------------------------------
 
 
 @pytest.fixture
-def place_index(jobs_db):
-    return build_place_index(get_job_locations(jobs_db))
+def agent(make_repository) -> RagAgent:
+    return _agent(make_repository())
+
+
+@pytest.fixture
+def place_index(agent):
+    return agent._build_place_index(agent.job_repository.get_job_locations())
 
 
 def _ids(place_index, places):
@@ -72,156 +86,27 @@ def _ids(place_index, places):
         ("Lowongan backend engineer", set()),
     ],
 )
-def test_detect_places(place_index, question, expected_ids):
-    assert _ids(place_index, detect_places(question, place_index)) == expected_ids
+def test_find_places(agent, place_index, question, expected_ids):
+    assert _ids(place_index, agent._find_places(question, place_index)) == expected_ids
 
 
-def test_longer_place_name_wins(place_index):
-    assert detect_places("kerja di Jakarta Selatan", place_index) == ["jakarta selatan"]
+def test_longer_place_name_wins(agent, place_index):
+    assert agent._find_places("kerja di Jakarta Selatan", place_index) == ["jakarta selatan"]
 
 
-def test_place_must_be_whole_word():
-    index = build_place_index([(1, "Serang, Banten"), (2, "Kembangan, Jakarta Raya")])
-    assert detect_places("analis serangan siber", index) == []
-    assert detect_places("manajer pengembangan bisnis", index) == []
-    assert detect_places("lowongan di Serang", index) == ["serang"]
+def test_place_must_be_whole_word(agent):
+    index = agent._build_place_index([(1, "Serang, Banten"), (2, "Kembangan, Jakarta Raya")])
+    assert agent._find_places("analis serangan siber", index) == []
+    assert agent._find_places("manajer pengembangan bisnis", index) == []
+    assert agent._find_places("lowongan di Serang", index) == ["serang"]
 
 
-def test_place_index_is_exact_not_substring():
-    index = build_place_index([(1, "Central Karang, Banten"), (2, "Cikarang Pusat, Jawa Barat")])
-    assert _ids(index, detect_places("lowongan di Karang", index)) == {1}
-    assert _ids(index, detect_places("lowongan di Cikarang", index)) == {2}
-
-
-# --- retrieve_jobs dengan stub -----------------------------------------------
-
-# Teks chunk dibuat >= MIN_CHUNK_CHARS (40) agar tidak terbuang sebagai judul bagian.
-CHUNKS = [
-    (1, "Menganalisis data penjualan memakai SQL dan Python", 0.62),
-    (1, "Membuat laporan mingguan untuk tim manajemen", 0.58),  # chunk kedua job 1: dibuang
-    (2, "Membantu cleaning data dan membuat dashboard harian", 0.55),
-    (6, "Mengelola rekrutmen dan administrasi karyawan", 0.47),
-    (5, "Membangun REST API dengan Python dan PostgreSQL", 0.44),  # di bawah threshold 0,45
-    (3, "Membuat materi visual untuk kampanye media sosial", 0.30),
-]
-LONG = "teks chunk yang cukup panjang untuk lolos batas minimal"
-
-
-def test_dedupe_keeps_best_chunk_per_job(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs("lowongan data analyst", vector_store=store, db_path=jobs_db)
-
-    assert [job["id"] for job in result.jobs] == [1, 2, 6]
-    assert result.jobs[0]["score"] == 0.62
-    assert result.jobs[0]["matched_chunk"] == "Menganalisis data penjualan memakai SQL dan Python"
-    assert result.jobs[0]["company_name"] == "PT Alpha"
-    assert result.chunks_found == 6
-    assert result.unique_jobs == 5
-    assert result.below_threshold == 2
-
-
-@pytest.mark.parametrize(
-    ("question", "places", "expected"),
-    [
-        ("Lowongan selain di Jakarta", ["jakarta"], ([], ["jakarta"])),
-        ("loker di luar jakarta", ["jakarta"], ([], ["jakarta"])),
-        ("Lowongan admin kecuali Bandung", ["bandung"], ([], ["bandung"])),
-        ("Lowongan bukan dari Surabaya", ["surabaya"], ([], ["surabaya"])),
-        ("Lowongan di Jakarta", ["jakarta"], (["jakarta"], [])),
-        (
-            "Lowongan di Surabaya, selain Jakarta",
-            ["surabaya", "jakarta"],
-            (["surabaya"], ["jakarta"]),
-        ),
-    ],
-)
-def test_split_excluded_places(question, places, expected):
-    assert split_excluded_places(question, places) == expected
-
-
-def test_allowed_job_ids_subtracts_excluded(place_index):
-    assert allowed_job_ids(place_index, [], ["jakarta"]) == {2, 3, 5}  # semua yang berlokasi
-    assert allowed_job_ids(place_index, ["jawa"], ["bandung"]) == {2}
-    assert allowed_job_ids(place_index, ["jakarta"], []) == {1, 4, 6}
-
-
-def test_excluded_place_filters_out_that_city(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs("lowongan data selain di Jakarta", vector_store=store, db_path=jobs_db)
-
-    assert result.places == []
-    assert result.excluded_places == ["jakarta"]
-    assert set(store.calls[0]["filter"].must[0].match.any) == {2, 3, 5}
-    assert all("jakarta" not in job["location"].lower() for job in result.jobs)
-
-
-def test_exclusion_covering_requested_place_returns_nothing(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs(
-        "lowongan di Jakarta Selatan selain Jakarta", vector_store=store, db_path=jobs_db
+def test_place_index_is_exact_not_substring(agent):
+    index = agent._build_place_index(
+        [(1, "Central Karang, Banten"), (2, "Cikarang Pusat, Jawa Barat")]
     )
-
-    assert result.jobs == []
-    assert store.calls == []  # tidak ada kandidat, Qdrant tidak dipanggil
-
-
-def test_top_n_limits_results(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs("data", vector_store=store, db_path=jobs_db, top_n=2)
-    assert [job["id"] for job in result.jobs] == [1, 2]
-
-
-def test_no_place_means_no_filter(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs("lowongan data analyst", vector_store=store, db_path=jobs_db)
-
-    assert result.places == []
-    assert result.search_query == "lowongan data analyst"
-    assert store.calls == [{"query": "lowongan data analyst", "k": 20, "filter": None}]
-
-
-def test_place_filter_restricts_to_place_jobs(jobs_db, fake_vector_store):
-    store = fake_vector_store(CHUNKS)
-    result = retrieve_jobs("lowongan data di Jakarta", vector_store=store, db_path=jobs_db)
-
-    assert result.places == ["jakarta"]
-    assert set(store.calls[0]["filter"].must[0].match.any) == {1, 4, 6}
-    assert store.calls[0]["query"] == "lowongan data di"  # nama kota tidak ikut di-embed
-    assert result.search_query == "lowongan data di"
-    assert [job["id"] for job in result.jobs] == [1, 6]
-
-
-def test_all_below_threshold_returns_empty(jobs_db, fake_vector_store):
-    store = fake_vector_store([(1, LONG, 0.40), (2, LONG, 0.30)])
-    result = retrieve_jobs("resep nasi goreng", vector_store=store, db_path=jobs_db)
-
-    assert result.jobs == []
-    assert result.below_threshold == 2
-
-
-def test_stale_vector_id_is_skipped(jobs_db, fake_vector_store):
-    store = fake_vector_store([(999, LONG, 0.70), (1, LONG, 0.60)])
-    result = retrieve_jobs("data", vector_store=store, db_path=jobs_db)
-    assert [job["id"] for job in result.jobs] == [1]
-
-
-def test_chunk_without_job_id_is_ignored(jobs_db):
-    class NoMetadataStore:
-        def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
-            return [(Document(page_content=LONG), 0.9)]
-
-    result = retrieve_jobs("data", vector_store=NoMetadataStore(), db_path=jobs_db)
-    assert result.jobs == []
-    assert result.chunks_found == 1
-
-
-def test_short_heading_chunk_is_ignored(jobs_db, fake_vector_store):
-    store = fake_vector_store([(2, "Deskripsi Pekerjaan", 0.80), (1, LONG, 0.60)])
-    result = retrieve_jobs("lowongan", vector_store=store, db_path=jobs_db)
-
-    assert [job["id"] for job in result.jobs] == [1]
-    assert result.chunks_found == 2
-    assert result.unique_jobs == 1
+    assert _ids(index, agent._find_places("lowongan di Karang", index)) == {1}
+    assert _ids(index, agent._find_places("lowongan di Cikarang", index)) == {2}
 
 
 @pytest.mark.parametrize(
@@ -234,14 +119,88 @@ def test_short_heading_chunk_is_ignored(jobs_db, fake_vector_store):
         ("Lowongan di Bali?", ["bali"], "Lowongan di ?"),
     ],
 )  # fmt: skip
-def test_remove_places(question, places, expected):
-    assert remove_places(question, places) == expected
+def test_remove_places(agent, question, places, expected):
+    assert agent._remove_places(question, places) == expected
+
+
+# --- retrieve_jobs dengan stub -----------------------------------------------
+
+
+def test_dedupe_keeps_best_chunk_per_job(make_repository):
+    result = _retrieve(make_repository(CHUNKS), "lowongan data analyst")
+
+    assert [job["id"] for job in result.jobs] == [1, 2, 6]
+    assert result.jobs[0]["score"] == 0.62
+    assert result.jobs[0]["matched_chunk"] == "Menganalisis data penjualan memakai SQL dan Python"
+    assert result.jobs[0]["company_name"] == "PT Alpha"
+
+
+def test_tool_content_is_json_of_artifact(make_repository):
+    content, result = _agent(make_repository(CHUNKS)).retrieve_jobs("lowongan data analyst")
+    assert content == result.model_dump_json()
+
+
+def test_top_n_limits_results(make_repository):
+    result = _retrieve(make_repository(CHUNKS), "data", top_n=2)
+    assert [job["id"] for job in result.jobs] == [1, 2]
+
+
+def test_no_place_means_no_filter(make_repository):
+    repository = make_repository(CHUNKS)
+    result = _retrieve(repository, "lowongan data analyst")
+
+    assert result.places == []
+    assert repository.vector_db.calls == [
+        {"query": "lowongan data analyst", "k": CANDIDATE_K, "filter": None}
+    ]
+
+
+def test_place_filter_restricts_to_place_jobs(make_repository):
+    repository = make_repository(CHUNKS)
+    result = _retrieve(repository, "lowongan data di Jakarta")
+
+    call = repository.vector_db.calls[0]
+    assert result.places == ["jakarta"]
+    assert set(call["filter"].must[0].match.any) == {1, 4, 6}
+    assert call["query"] == "lowongan data di"  # nama kota tidak ikut di-embed
+    assert [job["id"] for job in result.jobs] == [1, 6]
+
+
+def test_all_below_threshold_returns_empty(make_repository):
+    result = _retrieve(make_repository([(1, LONG, 0.40), (2, LONG, 0.30)]), "resep nasi goreng")
+    assert result.jobs == []
+
+
+def test_place_filter_skips_threshold(make_repository):
+    repository = make_repository([(6, LONG, 0.30), (1, LONG, 0.20), (2, LONG, 0.90)])
+    result = _retrieve(repository, "Ada lowongan apa saja di Jakarta?")
+    assert [job["id"] for job in result.jobs] == [6, 1]  # job 2 (Surabaya) tetap tersaring
+
+
+def test_stale_vector_id_is_skipped(make_repository):
+    result = _retrieve(make_repository([(999, LONG, 0.70), (1, LONG, 0.60)]), "data")
+    assert [job["id"] for job in result.jobs] == [1]
+
+
+def test_chunk_without_job_id_is_ignored(make_repository):
+    class NoMetadataStore:
+        def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
+            return [(Document(page_content=LONG), 0.9)]
+
+    repository = make_repository()
+    repository.vector_db = NoMetadataStore()
+    assert _retrieve(repository, "data").jobs == []
+
+
+def test_short_heading_chunk_is_ignored(make_repository):
+    repository = make_repository([(2, "Deskripsi Pekerjaan", 0.80), (1, LONG, 0.60)])
+    assert [job["id"] for job in _retrieve(repository, "lowongan").jobs] == [1]
 
 
 # --- Qdrant in-memory asli ---------------------------------------------------
 
 
-def test_job_id_filter_works_on_real_qdrant():
+def test_job_id_filter_works_on_real_qdrant(agent):
     """Stub tidak bisa membuktikan Qdrant menerima key/tipe filter; test ini bisa."""
     docs = [
         Document(page_content=f"deskripsi {i}", metadata={"job_id": job_id, "chunk_index": i})
@@ -250,17 +209,8 @@ def test_job_id_filter_works_on_real_qdrant():
     store = QdrantVectorStore.from_documents(
         docs, DeterministicFakeEmbedding(size=16), location=":memory:", collection_name="jobs"
     )
-    hits = store.similarity_search_with_score(
-        "deskripsi", k=20, filter=build_job_id_filter({1, 4, 6})
-    )
+    place_filter = agent._build_filter({"x": {1, 4, 6}}, ["x"])
+    hits = store.similarity_search_with_score("deskripsi", k=20, filter=place_filter)
 
     assert {doc.metadata["job_id"] for doc, _ in hits} == {1, 4, 6}
     assert len(hits) == 5
-
-
-def test_place_filter_skips_threshold(jobs_db, fake_vector_store):
-    store = fake_vector_store([(6, LONG, 0.30), (1, LONG, 0.20), (2, LONG, 0.90)])
-    result = retrieve_jobs("Ada lowongan apa saja di Jakarta?", vector_store=store, db_path=jobs_db)
-
-    assert [job["id"] for job in result.jobs] == [6, 1]  # job 2 (Surabaya) tetap tersaring
-    assert result.below_threshold == 0

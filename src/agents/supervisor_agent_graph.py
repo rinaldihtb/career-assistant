@@ -12,7 +12,6 @@ from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from pydantic import BaseModel
-from pydantic.fields import PrivateAttr
 
 from src.agents.prompts import (
     SUPERVISOR_CHAT_SYSTEM,
@@ -56,7 +55,6 @@ class Plan(BaseModel):
     subtasks: list[SubTask]
     skipped: list[str]
     declined: list[str]
-    _planner_usage: LLMUsage = PrivateAttr(default_factory=LLMUsage)
 
 
 class SupervisorState(TypedDict, total=False):
@@ -67,6 +65,7 @@ class SupervisorState(TypedDict, total=False):
     subtasks: list[dict[str, str]]
     skipped: list[str]
     declined: list[str]
+    planner_usage: LLMUsage
     worker_index: int
     worker_question: str
     collected: Annotated[list[tuple[int, AgentResult]], operator.add]
@@ -183,25 +182,20 @@ class SupervisorAgent:
             ),
             *state.get("messages", []),
         ]
-        llm_call = self.llm.with_structured_output(Plan, include_raw=True).invoke(messages)
+        fallback: dict = {"response": "clarify", "subtasks": [], "skipped": [], "declined": []}
         try:
             output = cast(
                 dict[str, object],
-                llm_call,
+                self.llm.with_structured_output(Plan, include_raw=True).invoke(messages),
             )
         except Exception:  # noqa: BLE001 - provider/parsing error beragam.
-            return {
-                "response": "clarify",
-                "subtasks": [],
-                "skipped": [],
-                "declined": [],
-                "planner_usage": LLMUsage(),
-            }
+            return {**fallback, "planner_usage": LLMUsage()}
 
-        raw = output.get("raw")
-
-        parsed_plan: Plan = cast(Plan, output.get("parsed"))
-        parsed_plan._planner_usage.add(raw, step="planner")
+        usage = LLMUsage()
+        usage.add(output.get("raw"), step="planner")
+        parsed_plan = output.get("parsed")
+        if not isinstance(parsed_plan, Plan):
+            return {**fallback, "planner_usage": usage}
 
         subtasks = [
             {"agent": task.agent, "question": task.question.strip()}
@@ -216,7 +210,7 @@ class SupervisorAgent:
             "subtasks": subtasks[:MAX_SUBTASKS],
             "skipped": parsed_plan.skipped,
             "declined": parsed_plan.declined,
-            "planner_usage": parsed_plan._planner_usage,
+            "planner_usage": usage,
         }
 
     def format_history(self, history: Sequence[Mapping[str, str]]) -> str:
@@ -315,7 +309,7 @@ class SupervisorAgent:
                 job_ids=sql_data.job_ids,
                 sql=sql_data.sql,
                 rows=sql_data.rows,
-                usage=usage,
+                usage=usage.merged(sql_data.usage),
                 error=sql_data.error,
             )
         else:
@@ -454,9 +448,9 @@ class SupervisorAgent:
 
 
 if __name__ == "__main__":
-    from src.containers import supervisor_agent
+    from src.containers import get_supervisor_agent
 
-    state = supervisor_agent.graph.invoke(
+    state = get_supervisor_agent().graph.invoke(
         {"messages": [HumanMessage(content="Lowongan data analyst jakarta?")]}
     )
     print(state["result"].answer)
