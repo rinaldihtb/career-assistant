@@ -109,6 +109,17 @@ class JobRepository:
 
         return locations
 
+    def get_job_listings(self) -> list[dict[str, Any]]:
+        """Kolom daftar dan deskripsi semua lowongan, urut ID, untuk halaman Cari Lowongan.
+
+        ``job_description`` NULL dikembalikan sebagai string kosong.
+        """
+        rows = self.db._execute(
+            "SELECT id, job_title, company_name, location, work_type, salary_min, salary_max, "
+            "COALESCE(job_description, '') AS job_description FROM jobs ORDER BY id"
+        )
+        return [dict(row) for row in rows]
+
     def execute_sql(self, sql: str, *, max_rows: int) -> list[dict[str, Any]]:
         """Jalankan query SQL agent pada koneksi SQLite yang hanya boleh membaca.
 
