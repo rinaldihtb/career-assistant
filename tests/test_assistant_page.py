@@ -1,18 +1,21 @@
 """Halaman Asisten Karier dengan Streamlit AppTest (tanpa browser dan tanpa API key).
 
-``get_supervisor_agent`` diganti graph palsu: yang dites di sini adalah UI, yaitu
-riwayat chat, kartu lowongan, tabel SQL, dan penanganan error. Logika agent
-sudah dites di file test masing-masing.
+``get_supervisor_agent`` diganti graph palsu, dan ``requests.post`` dari UI diteruskan ke
+handler ``POST /chat-assistant`` yang asli, sehingga kontrak UI <-> API ikut teruji tanpa
+server. Yang dites di sini adalah UI, yaitu riwayat chat, kartu lowongan, tabel SQL, dan
+penanganan error. Logika agent sudah dites di file test masing-masing.
 """
 
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 from streamlit.testing.v1 import AppTest
 
 from src.components import assistant_chat
 from src.components.assistant_chat import (
+    API_ERROR,
     DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
@@ -20,6 +23,7 @@ from src.components.assistant_chat import (
     split_rag_answer,
 )
 from src.models.agent import AgentResult, LLMCall, LLMUsage
+from src.routes import routes
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
 # Run pertama di satu proses pytest memuat pandas/pyarrow untuk st.dataframe: 7 detik di
@@ -71,11 +75,13 @@ def _page():
 class FakeGraph:
     """Pengganti ``SupervisorAgent.graph``: mencatat input, membalas ``AgentResult`` berurutan.
 
-    Hasil terakhir dipakai ulang jika pertanyaan lebih banyak dari daftar hasil.
+    Hasil terakhir dipakai ulang jika pertanyaan lebih banyak dari daftar hasil. ``urls``
+    diisi ``_use`` dengan alamat setiap panggilan API dari UI.
     """
 
     def __init__(self, *results: AgentResult) -> None:
         self.inputs: list[dict] = []
+        self.urls: list[str] = []
         self.results = results
 
     def invoke(self, state: dict) -> dict:
@@ -83,11 +89,31 @@ class FakeGraph:
         return {"result": self.results[min(len(self.inputs), len(self.results)) - 1]}
 
 
+class FakeResponse:
+    """Respons ``requests`` minimal: status 200 dan isi JSON dari handler route."""
+
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self.payload
+
+
 def _use(monkeypatch, *results: AgentResult, repository=None) -> FakeGraph:
-    """Pasang graph palsu (dan repository bila ada) di halaman Asisten."""
+    """Pasang graph palsu di UI dan route, lalu arahkan ``requests.post`` ke handler route."""
     graph = FakeGraph(*results)
     agent = SimpleNamespace(graph=graph)
     monkeypatch.setattr(assistant_chat, "get_supervisor_agent", lambda: agent)
+    monkeypatch.setattr(routes, "get_supervisor_agent", lambda: agent)
+
+    def post(url, *, json, timeout):
+        graph.urls.append(url)
+        return FakeResponse(routes.chat_assistant(json))
+
+    monkeypatch.setattr(assistant_chat.requests, "post", post)
     if repository is not None:
         monkeypatch.setattr(assistant_chat, "get_job_repository", lambda: repository)
     return graph
@@ -221,6 +247,36 @@ def test_missing_config_shows_error_instead_of_crash(monkeypatch):
     assert not app.exception
     assert app.error[0].value == DEPENDENCY_ERROR
     assert len(app.chat_input) == 0
+
+
+def test_api_url_comes_from_env(monkeypatch):
+    graph = _use(monkeypatch, SQL_RESULT)
+    monkeypatch.setenv("ASSISTANT_API_URL", "http://fastapi:8000/")
+    app = _app()
+    app.chat_input[0].set_value("Rata-rata gaji di Surabaya?").run()
+
+    monkeypatch.delenv("ASSISTANT_API_URL")
+    app.chat_input[0].set_value("Kalau di Bandung?").run()
+
+    assert graph.urls == [
+        "http://fastapi:8000/chat-assistant",
+        "http://localhost:8000/chat-assistant",
+    ]
+
+
+def test_unreachable_api_shows_error_and_keeps_question(monkeypatch):
+    _use(monkeypatch, SQL_RESULT)
+
+    def down(url, *, json, timeout):
+        raise requests.ConnectionError("tidak terjangkau")
+
+    monkeypatch.setattr(assistant_chat.requests, "post", down)
+    app = _app()
+    app.chat_input[0].set_value("Rata-rata gaji di Surabaya?").run()
+
+    assert not app.exception
+    assert app.error[0].value == API_ERROR
+    assert [m["role"] for m in app.session_state[MESSAGES_KEY]] == ["user"]
 
 
 def test_page_is_registered_in_app(calls):

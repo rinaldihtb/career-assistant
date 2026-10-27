@@ -1,10 +1,10 @@
-"""Halaman Asisten Karier: chat yang memanggil supervisor agent.
+"""Halaman Asisten Karier: chat yang memanggil supervisor agent lewat FastAPI.
 
-Komponen ini hanya mengurus tampilan dan riwayat chat. Pemilihan dan
-penggabungan agent (SQL, RAG, atau pesan umum) sepenuhnya dikerjakan graph
-``SupervisorAgent`` dari ``src.containers``; UI tidak memanggil agent lain secara
-langsung. Jawaban gabungan (``source="multi"``) ditampilkan per bagian dengan aturan
-yang sama seperti jawaban satu agent.
+Komponen ini hanya mengurus tampilan dan riwayat chat. Pertanyaan dan riwayat dikirim
+ke ``POST /chat-assistant`` (``src/routes/routes.py``), yang menjalankan graph
+``SupervisorAgent``; UI tidak memanggil agent secara langsung. Jawaban gabungan
+(``source="multi"``) ditampilkan per bagian dengan aturan yang sama seperti jawaban
+satu agent.
 """
 
 import logging
@@ -36,6 +36,13 @@ DEPENDENCY_ERROR = (
     "Asisten belum bisa dijalankan karena konfigurasi LLM atau Qdrant belum lengkap. "
     "Periksa file .env."
 )
+API_ERROR = "Asisten belum bisa dihubungi. Silakan coba lagi."
+# Alamat FastAPI dibaca dari env saat dipanggil: docker-compose mengisinya dengan nama
+# layanan (http://fastapi:8000); tanpa env, `make api` di mesin yang sama.
+API_URL_ENV = "ASSISTANT_API_URL"
+DEFAULT_API_URL = "http://localhost:8000"
+# (connect, read) detik; jawaban terlama di set eval 14 detik.
+API_TIMEOUT = (5, 90)
 SOURCE_LABELS = {
     "rag": "Pencarian lowongan (RAG)",
     "sql": "Statistik data (SQL)",
@@ -103,10 +110,11 @@ def render_assistant_page() -> None:
 
 
 def _answer(question: str, messages: list[dict[str, Any]]) -> None:
-    """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
+    """Kirim pertanyaan ke API, tampilkan jawaban, lalu simpan ke riwayat.
 
-    FastAPI menerima ``history`` dan ``user_message``. ``AgentResult`` dibuat dari
-    respons itu agar tampilan chat yang ada tetap digunakan.
+    ``history`` diambil sebelum pertanyaan ditambahkan agar pertanyaan tidak terkirim
+    dua kali. ``AgentResult`` dan durasi ikut disimpan agar kartu dan detail LLM tetap
+    tampil saat rerun. Jika API gagal, pesan error tampil dan pertanyaan tetap di riwayat.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
     user_message = {"role": "user", "content": question}
@@ -117,22 +125,16 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
         with st.spinner("Mencari jawaban..."):
             start = time.perf_counter()
             try:
-                response = requests.post(
-                    "http://fastapi:8000/chat-assistant",
-                    json={"history": history, "user_message": user_message},
-                    timeout=(5, 90),
-                )
-                response.raise_for_status()
-                result = AgentResult(answer=response.json()["answer"], source="general")
+                result = ask_assistant_api(history, user_message)
             except (requests.RequestException, KeyError, TypeError, ValueError):
                 logger.exception("Gagal memanggil Chat Assistant API")
-                st.error("Asisten belum bisa dihubungi. Silakan coba lagi.")
+                st.error(API_ERROR)
                 return
             seconds = time.perf_counter() - start
             display = prepare_display(result)
         _render_result(result, display, seconds)
     if result.error:
-        logger.warning("Agent %s error: %s", resultZsource, result.error)
+        logger.warning("Agent %s error: %s", result.source, result.error)
     messages.append(
         {
             "role": "assistant",
@@ -142,6 +144,27 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
             "seconds": seconds,
         }
     )
+
+
+def ask_assistant_api(history: list[dict[str, str]], user_message: dict[str, str]) -> AgentResult:
+    """Kirim satu giliran chat ke ``POST /chat-assistant`` dan kembalikan ``AgentResult``-nya.
+
+    Respons API berbentuk ``{"result": AgentResult.model_dump(mode="json")}``, jadi job_ids,
+    rows, parts, dan usage ikut kembali untuk kartu dan detail LLM.
+
+    Raises:
+        requests.RequestException: API tidak terjangkau, timeout, atau status bukan 2xx.
+        KeyError, TypeError, ValueError: Isi respons tidak sesuai kontrak (termasuk
+            ``pydantic.ValidationError``).
+    """
+    base_url = os.getenv(API_URL_ENV) or DEFAULT_API_URL
+    response = requests.post(
+        f"{base_url.rstrip('/')}/chat-assistant",
+        json={"history": history, "user_message": user_message},
+        timeout=API_TIMEOUT,
+    )
+    response.raise_for_status()
+    return AgentResult.model_validate(response.json()["result"])
 
 
 def _ask(question: str) -> None:
