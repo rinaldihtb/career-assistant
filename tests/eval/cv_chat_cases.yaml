@@ -33,9 +33,13 @@
 #    lowongan yang paling cocok dengan CV-mu"), rag, sql, atau unsupported diterima.
 # K10 (v1.3) Ingin pindah karier tanpa menyebut bidang tujuan -> out_of_scope (balasan
 #    menanyakan bidang tujuan), bukan lowongan posisi lama.
+# K11 (v1.4) "Yang paling cocok" yang menempel pada posisi dan kota di kalimat yang sama
+#    ("gaji DA Jakarta + 1 yang paling cocok") merujuk lowongan posisi dan kota itu -> rag
+#    berposisi dan berkota, bukan cv_match (lowongan teratas seluruh data).
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
+# profile (opsional): field profil yang menimpa fixture CV, mis. target_role dengan dua posisi
 # expected.response : answer | clarify | refuse | out_of_scope | unsupported (default answer)
 # expected.agents   : agent per sub-tugas, urutan tidak dinilai; agents_alt: alternatif yang sah
 # expected.response_alt: jenis respons lain yang sah
@@ -44,7 +48,7 @@
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.3"
+version: "1.4"
 profiles: tests/eval/cv_chat_profiles.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -229,6 +233,14 @@ cases:
     question: Tunjukkan lowongan yang cocok buatku, lalu berapa jumlah lowongan data analyst di Jakarta?
     expected: {agents: [cv_match, sql]}
 
+  - id: C6-03
+    category: C6
+    cv: cv01
+    question: gaji DA Jakarta + 1 yang paling cocok
+    expected: {agents: [sql, rag]}
+    checks:
+      standalone_all: [[data analyst, analis data], [jakarta]]
+
   # --- C7: lanjutan ---------------------------------------------------------------
   - id: C7-01
     category: C7
@@ -321,6 +333,15 @@ cases:
       standalone_any: [data analyst]
       answer_any: [data analyst, analis data]
 
+  - id: C10-05
+    category: C10
+    cv: cv01
+    question: switch ke finance
+    expected: {agents: [cv_role]}
+    checks:
+      standalone_any: [finance, keuangan]
+      standalone_none: [data analyst]
+
   # --- C11: "saya" dalam permintaan berposisi jelas -> tanpa agent CV (K9) ---------
   - id: C11-01
     category: C11
@@ -371,6 +392,29 @@ cases:
       response_alt: [unsupported]
     checks:
       standalone_none: [sales, marketing]
+
+  - id: C12-03
+    category: C12
+    cv: cv01
+    question: skill paling sering diminta recruiter
+    expected:
+      agents: [cv_gap]
+      agents_alt: [[rag], [sql], []]
+      response_alt: [unsupported]
+    checks:
+      standalone_none: [data analyst]
+
+  - id: C12-04
+    category: C12
+    cv: cv01
+    profile: {target_role: Fullstack Developer dan Data Analyst}
+    question: skill paling sering diminta recruiter
+    expected:
+      agents: [cv_gap]
+      agents_alt: [[rag], [sql], []]
+      response_alt: [unsupported]
+    checks:
+      standalone_none: [fullstack, data analyst]
 
   # --- C13: pindah karier tanpa bidang tujuan -> out_of_scope (K10) ----------------
   - id: C13-01

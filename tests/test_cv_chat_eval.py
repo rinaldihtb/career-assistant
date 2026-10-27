@@ -205,6 +205,22 @@ def test_run_case_records_route_ids_and_planner_tokens():
     assert record["planner_tokens"] == 3400
 
 
+def test_run_case_applies_case_profile_override():
+    seen = {}
+
+    class FakeGraph:
+        def invoke(self, state):
+            seen["profile"] = state["profile"]
+            return {"response": "out_of_scope", "subtasks": [], "subresults": []}
+
+    override = {"target_role": "Fullstack Developer dan Data Analyst"}
+    run_case(case(profile=override), FakeGraph(), {"cv01": (PROFILE, MATCHES)})
+
+    assert seen["profile"].target_role == "Fullstack Developer dan Data Analyst"
+    assert seen["profile"].skills == PROFILE.skills
+    assert PROFILE.target_role == "Data Analyst"
+
+
 def test_run_case_without_cv_sends_no_profile():
     class BrokenGraph:
         def invoke(self, state):
@@ -225,9 +241,10 @@ def test_case_file_is_consistent():
     ids = [item["id"] for item in cases]
 
     assert profiles_path == Path("tests/eval/cv_chat_profiles.json")
-    assert len(ids) == len(set(ids)) == 45
+    assert len(ids) == len(set(ids)) == 49
     for item in cases:
         assert item["cv"] in {"cv01", "cv02", "cv03", "cv04", "cv05", None}
+        assert set(item.get("profile", {})) <= set(CVProfile.model_fields)
         options = [item["expected"]["agents"], *item["expected"].get("agents_alt", [])]
         assert all(set(option) <= set(AGENT_NODES) for option in options)
         assert set(item.get("checks", {})) <= {

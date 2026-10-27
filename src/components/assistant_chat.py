@@ -412,6 +412,10 @@ def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:
     seperti ``(Jakarta Raya (Hibrid))`` pemisahnya tetap ditemukan, karena ``)``
     pertama diikuti ``)``, bukan ``:``.
 
+    Baris kosong di pembuka dipertahankan (beberapa baris kosong berurutan jadi satu): tanpa
+    pemisah itu, paragraf setelah daftar skill jawaban CV ikut menjadi bagian butir terakhir
+    saat dirender sebagai markdown.
+
     Returns:
         ``(pembuka, {id: catatan})``. Baris tanpa ``[ID:x]`` masuk ke pembuka.
     """
@@ -420,13 +424,14 @@ def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:
     for line in answer.splitlines():
         match = _ANSWER_JOB_LINE.match(line)
         if match is None:
-            if line.strip():
-                intro_lines.append(line.strip())
+            text = line.strip()
+            if text or (intro_lines and intro_lines[-1]):
+                intro_lines.append(text)
             continue
         rest = match.group(2)
         _, separator, reason = rest.partition("): ")
         reasons[int(match.group(1))] = (reason if separator else rest).strip(" -:")
-    return "\n".join(intro_lines), reasons
+    return "\n".join(intro_lines).strip(), reasons
 
 
 def _number(value: int) -> str:

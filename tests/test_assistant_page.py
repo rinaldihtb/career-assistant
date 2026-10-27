@@ -13,6 +13,7 @@ import pytest
 import requests
 from streamlit.testing.v1 import AppTest
 
+from src.agents.cv_agent import role_answer
 from src.components import assistant_chat
 from src.components.assistant_chat import (
     API_ERROR,
@@ -319,6 +320,29 @@ def test_split_rag_answer_handles_nested_location():
         "Berikut lowongannya:",
         {14: "Fokus SQL.", 28: "Kontrak, analitik."},
     )
+
+
+def test_split_rag_answer_keeps_paragraph_after_skill_list():
+    matches = MatchResult(
+        matches=[
+            JobMatch(
+                job_id=job_id,
+                job_title="Finance Analyst",
+                score=0.7,
+                semantic=0.7,
+                semantic_scaled=0.7,
+                matched_skills=["SQL"],
+                missing_skills=["Excel"],
+            )
+            for job_id in (1, 2)
+        ]
+    )
+
+    intro, notes = split_rag_answer(role_answer("Finance Analyst", matches).answer)
+
+    assert "- Excel: 2 dari 2 lowongan\n\nSkill CV-mu yang sudah diminta" in intro
+    assert "\n\n\n" not in intro
+    assert set(notes) == {1, 2}
 
 
 def test_split_rag_answer_without_location_separator():

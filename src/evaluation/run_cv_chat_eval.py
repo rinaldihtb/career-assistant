@@ -11,7 +11,9 @@ Profil CV fiktif (cv01..cv05) dan kandidat lowongannya dibaca dari fixture yang 
 tanpa nama, kontak, lokasi, dan riwayat kerja). Hasil Cocokkan CV dibangun ulang dengan
 ``rank_jobs`` dari kandidat tersimpan (``rebuild_matches``), jadi tidak ada embedding: yang
 memanggil API hanya planner dan worker SQL/RAG. Input graph sama dengan halaman Asisten:
-``messages`` (riwayat lalu pertanyaan), ``profile``, dan ``matches``.
+``messages`` (riwayat lalu pertanyaan), ``profile``, dan ``matches``. Field ``profile`` kasus
+(opsional) menimpa sebagian field profil fixture, misalnya ``target_role`` dengan dua posisi;
+hasil Cocokkan CV tetap milik fixture.
 
 Yang dinilai per kasus:
 - ``response``: jenis respons planner.
@@ -208,6 +210,8 @@ def run_case(
         profiles: Hasil ``load_profiles``; kasus ``cv: null`` berjalan tanpa CV.
     """
     profile, matches = profiles[case["cv"]] if case.get("cv") else (None, None)
+    if profile is not None and case.get("profile"):
+        profile = profile.model_copy(update=case["profile"])
     start = time.perf_counter()
     try:
         state = graph.invoke({**graph_input(case), "profile": profile, "matches": matches})
