@@ -90,6 +90,11 @@ def test_find_places(agent, place_index, question, expected_ids):
     assert _ids(place_index, agent._find_places(question, place_index)) == expected_ids
 
 
+def test_find_places_reads_locations_from_repository(agent):
+    assert agent.find_places("Lowongan sales selain di Jakarta Selatan") == ["jakarta selatan"]
+    assert agent.find_places("Lowongan backend engineer") == []
+
+
 def test_longer_place_name_wins(agent, place_index):
     assert agent._find_places("kerja di Jakarta Selatan", place_index) == ["jakarta selatan"]
 

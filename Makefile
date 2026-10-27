@@ -9,6 +9,7 @@ help:
 	@echo "  make seed-vector        Seed dataset.json into Qdrant"
 	@echo "  make seed-all           Run clean data, SQLite seed, and vector seed"
 	@echo "  make run                Run the Streamlit app"
+	@echo "  make api                Run the FastAPI backend used by the Asisten page"
 	@echo "  make test               Run unit tests (no API key needed)"
 	@echo "  make lint               Ruff check for agent, repository, model, and test files"
 	@echo "  make sample-sql         Check SQL tools on the real database (no LLM)"
@@ -76,6 +77,11 @@ sample-match:
 eval-cv:
 	$(PYTHON) -m src.evaluation.run_cv_eval $(ARGS)
 
+.PHONY: eval-cv-chat
+
+eval-cv-chat:
+	$(PYTHON) -m src.evaluation.run_cv_chat_eval $(ARGS)
+
 .PHONY: sample-plan
 
 sample-plan:
@@ -85,3 +91,8 @@ sample-plan:
 
 sample-letter:
 	$(PYTHON) -m src.cv.letter_sample $(ARGS)
+
+.PHONY: api
+
+api:
+	$(PYTHON) -m uvicorn src.api:app --reload --port 8000

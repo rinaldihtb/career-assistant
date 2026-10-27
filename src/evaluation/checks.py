@@ -28,7 +28,7 @@ _NUMBER = re.compile(
 _RUPIAH = re.compile(r"rp\s?\d|\d\s*(juta|jt)\b", re.IGNORECASE)
 RELATIVE_TOLERANCE = 0.01
 
-AGENT_LLM_BUDGET = {"sql": 3, "rag": 1}
+AGENT_LLM_BUDGET = {"sql": 3, "rag": 1, "cv_match": 0, "cv_gap": 0}
 
 
 @dataclass
@@ -107,16 +107,17 @@ def split_citations(run: RunOutput) -> tuple[list[int], list[int], list[int]]:
     Returns:
         ``(dari_sql, dari_rag, tidak_valid)``. ID tidak valid = dikutip di jawaban
         tetapi tidak ada di ``job_ids`` sub-hasil mana pun (halusinasi atau rusak
-        saat sintesis).
+        saat sintesis). ID dari agent CV sah tetapi tidak masuk dua daftar pertama.
     """
-    pools: dict[str, set[int]] = {"sql": set(), "rag": set()}
+    pools: dict[str, set[int]] = {"sql": set(), "rag": set(), "cv": set()}
     for sub in run.subresults:
         if sub.source in pools:
             pools[sub.source].update(sub.job_ids)
     cited = cited_ids(run.answer)
     from_sql = [job_id for job_id in cited if job_id in pools["sql"]]
     from_rag = [job_id for job_id in cited if job_id in pools["rag"]]
-    invalid = [job_id for job_id in cited if job_id not in pools["sql"] | pools["rag"]]
+    valid = pools["sql"] | pools["rag"] | pools["cv"]
+    invalid = [job_id for job_id in cited if job_id not in valid]
     return from_sql, from_rag, invalid
 
 
@@ -279,5 +280,16 @@ def run_checks(
         found = _contains_any(standalone, checks["standalone_none"])
         results.append(
             CheckResult("standalone_none", not found, f"mandiri memuat {found}" if found else "")
+        )
+    if "standalone_all" in checks:
+        missing = [
+            group for group in checks["standalone_all"] if not _contains_any(standalone, group)
+        ]
+        results.append(
+            CheckResult(
+                "standalone_all",
+                not missing,
+                f"mandiri {standalone!r} tanpa {missing}" if missing else "",
+            )
         )
     return results

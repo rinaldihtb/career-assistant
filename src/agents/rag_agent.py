@@ -152,6 +152,11 @@ class RagAgent:
         result = RetrievalResult(jobs=jobs, places=places, excluded_places=excluded)
         return result.model_dump_json(), result
 
+    def find_places(self, question: str) -> list[str]:
+        """Lokasi dari kolom ``location`` yang disebut pertanyaan, termasuk yang dikecualikan."""
+        place_index = self._build_place_index(self.job_repository.get_job_locations())
+        return self._find_places(question, place_index)
+
     def _build_place_index(self, job_locations: Iterable[tuple[int, str]]) -> dict[str, set[int]]:
         """Petakan nama atau alias lokasi ke ID lowongan."""
         index: dict[str, set[int]] = {}

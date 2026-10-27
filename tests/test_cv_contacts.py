@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from src.agents.supervisor_agent_graph import planner_messages
 from src.cv.contacts import extract_contacts
 from src.cv.gap import compute_skill_gap
 from src.cv.letter import letter_prompt_input
@@ -55,6 +56,7 @@ def test_contacts_never_reach_model_inputs():
         profile_query_text(profile),
         *plan_prompt_input(profile, compute_skill_gap([job])),
         *letter_prompt_input(profile, job, "Deskripsi."),
+        *(message.content for message in planner_messages("Lowongan untukku", "-", profile)),
     ]
 
     for contact in contacts:

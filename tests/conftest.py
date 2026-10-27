@@ -212,10 +212,13 @@ def tool_call(name: str, **args: Any) -> AIMessage:
     return AIMessage(content="", tool_calls=[call], usage_metadata=USAGE)
 
 
-def plan_reply(*subtasks, response="answer", skipped=(), declined=()) -> AIMessage:
-    """Balasan planner: tool call ``Plan``; ``subtasks`` berupa pasangan (agent, pertanyaan)."""
+def plan_reply(*subtasks, response="answer", skipped=(), declined=(), schema="Plan") -> AIMessage:
+    """Balasan planner: tool call ``Plan`` (``CVPlan`` saat CV aktif).
+
+    ``subtasks`` berupa pasangan (agent, pertanyaan).
+    """
     return tool_call(
-        "Plan",
+        schema,
         response=response,
         subtasks=[{"agent": agent, "question": question} for agent, question in subtasks],
         skipped=list(skipped),
@@ -250,7 +253,7 @@ def agent_script(
 
     def reply(messages: list[BaseMessage]) -> Any:
         system = messages[0].content
-        if system == SUPERVISOR_PLANNER_SYSTEM.format(max_subtasks=3):
+        if system.startswith(SUPERVISOR_PLANNER_SYSTEM.split("{", 1)[0]):
             return plan
         if system.startswith(SQL_GENERATION_SYSTEM.split("{", 1)[0]):
             question = messages[-1].content.removeprefix("Pertanyaan: ").split("\n", 1)[0]
