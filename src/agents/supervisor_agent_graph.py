@@ -104,6 +104,14 @@ _CAREER_SWITCH = re.compile(
     r"\b(?:switch|pindah|ganti|beralih|banting\s+setir)\b.*\b(?:karir|karier|profesi|bidang)\b",
     re.IGNORECASE,
 )
+# Pernyataan pindah ke posisi atau bidang yang disebut ("switch ke finance"). Planner membalasnya
+# out_of_scope di C10-05 pada 7 dari 7 run, juga dengan aturan prompt yang memasukkannya ke cv_role.
+_CAREER_MOVE = re.compile(
+    r"\b(?:switch|pindah|beralih|ganti|banting\s+setir|upgrade|naik)"
+    r"(?:\s+(?:karir|karier|profesi|bidang|posisi|jabatan))?"
+    r"\s+(?:ke|jadi|menjadi)\s+(?:bidang\s+|posisi\s+)?(?P<role>[^?.!,;\n]+)",
+    re.IGNORECASE,
+)
 # Isi cv_role yang bukan nama posisi, misalnya "bidang lain" untuk "cara switch karir" (C13-01).
 _GENERIC_ROLE_WORDS = frozenset(
     {"lain", "baru", "bidang", "posisi", "karier", "karir", "profesi", "kerja", "pekerjaan"}
@@ -355,6 +363,19 @@ def is_new_role(role: str, profile: CVProfile) -> bool:
     return core_role(role).lower() not in own
 
 
+def career_move_role(question: str, profile: CVProfile) -> str:
+    """Posisi tujuan dari pernyataan pindah karier: "switch ke finance" -> "finance".
+
+    String kosong jika pertanyaan tidak memuat kata kerja pindah yang diikuti tujuan, atau
+    tujuannya bukan posisi baru (``is_new_role``), misalnya "pindah ke bidang lain".
+    """
+    match = _CAREER_MOVE.search(" ".join(question.split()))
+    if match is None:
+        return ""
+    role = match.group("role").strip(" .,;:!?")
+    return role if is_new_role(role, profile) else ""
+
+
 def replace_self_references(question: str, role: str) -> str:
     """Ganti frasa yang merujuk pengguna ("CV-ku", "untukku", "posisi yang kutuju") dengan ``role``.
 
@@ -398,7 +419,8 @@ class SupervisorAgent:
         ``messages`` (``_chat_context``) dan dikirim dalam satu pesan pengguna
         (``planner_messages``); dengan ``profile`` skemanya ``CVPlan``. Sub-tugas di atas
         ``MAX_SUBTASKS`` masuk ``skipped`` agar pengguna diberi tahu bagian yang belum
-        dijawab.
+        dijawab. Dengan CV, balasan out_of_scope untuk pernyataan pindah ke posisi yang disebut
+        diganti satu sub-tugas ``cv_role`` (``career_move_role``).
         """
         question, history, _ = _chat_context(state.get("messages", []))
         profile = state.get("profile")
@@ -430,6 +452,10 @@ class SupervisorAgent:
             # Tanpa CV planner bisa meminta klarifikasi; dengan CV, skema tanpa "clarify" dan
             # sub-tugas yang habis dibuang penjaga dibalas lewat out_of_scope (C13-01).
             response = "clarify" if profile is None else "out_of_scope"
+        if profile is not None and response == "out_of_scope" and not subtasks:
+            role = career_move_role(question, profile)
+            if role:
+                response, subtasks = "answer", [{"agent": "cv_role", "question": role}]
         overflow = [task["question"] for task in subtasks[MAX_SUBTASKS:]]
         return {
             "response": response,

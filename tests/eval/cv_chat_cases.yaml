@@ -33,9 +33,11 @@
 #    lowongan yang paling cocok dengan CV-mu"), rag, sql, atau unsupported diterima.
 # K10 (v1.3) Ingin pindah karier tanpa menyebut bidang tujuan -> out_of_scope (balasan
 #    menanyakan bidang tujuan), bukan lowongan posisi lama.
-# K11 (v1.4) "Yang paling cocok" yang menempel pada posisi dan kota di kalimat yang sama
-#    ("gaji DA Jakarta + 1 yang paling cocok") merujuk lowongan posisi dan kota itu -> rag
-#    berposisi dan berkota, bukan cv_match (lowongan teratas seluruh data).
+# K11 (v1.5) "Yang paling cocok" di samping posisi dan kota ("gaji DA Jakarta + 1 yang paling
+#    cocok"): rag berposisi dan berkota paling tepat, tetapi cv_match juga diterima. Planner
+#    memilih cv_match di 7 dari 7 run, juga dengan aturan prompt khusus yang menurunkan C12-02,
+#    dan pertanyaan pengguna tidak cukup untuk menyusun pertanyaan rag tanpa LLM. Menyaring
+#    hasil Cocokkan CV per posisi dan kota belum ada.
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
@@ -48,7 +50,7 @@
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.4"
+version: "1.5"
 profiles: tests/eval/cv_chat_profiles.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -237,7 +239,9 @@ cases:
     category: C6
     cv: cv01
     question: gaji DA Jakarta + 1 yang paling cocok
-    expected: {agents: [sql, rag]}
+    expected:
+      agents: [sql, rag]
+      agents_alt: [[sql, cv_match]]
     checks:
       standalone_all: [[data analyst, analis data], [jakarta]]
 

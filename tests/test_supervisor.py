@@ -33,6 +33,7 @@ from src.agents.supervisor_agent_graph import (
     Plan,
     SupervisorAgent,
     _chat_context,
+    career_move_role,
     check_citations,
     core_role,
     format_profile,
@@ -681,3 +682,38 @@ def test_career_switch_without_role_becomes_out_of_scope(make_repository):
 
     assert state["response"] == "out_of_scope"
     assert state["result"].answer == "Mau pindah ke bidang apa?"
+
+
+@pytest.mark.parametrize(
+    ("question", "role"),
+    [
+        ("switch ke finance", "finance"),
+        ("Pengen pindah karier ke bidang perhotelan, gimana?", "perhotelan"),
+        ("bagaimana cara saya untuk switch karir", ""),
+        ("pindah ke bidang lain", ""),
+        ("mau pindah jadi data analyst", ""),
+        ("Halo, jadi aku mau tanya", ""),
+    ],
+)
+def test_career_move_role(question, role):
+    assert career_move_role(question, PROFILE) == role  # PROFILE: Senior Data Analyst
+
+
+def test_out_of_scope_career_move_with_role_becomes_cv_role(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="out_of_scope", schema="CVPlan")))
+    state = _invoke(llm, make_repository(), "switch ke finance", **CV)
+
+    assert state["response"] == "answer"
+    assert state["subtasks"] == [{"agent": "cv_role", "question": "finance"}]
+    assert state["result"].answer == CV_ROLE_FAILED_MESSAGE.format(role="finance")
+    assert len(llm.received) == 1
+
+
+def test_out_of_scope_without_cv_is_not_changed_by_career_move(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(plan=plan_reply(response="out_of_scope"), chat="Mau ke bidang apa?")
+    )
+    state = _invoke(llm, make_repository(), "switch ke finance")
+
+    assert state["response"] == "out_of_scope"
+    assert state["result"].answer == "Mau ke bidang apa?"
