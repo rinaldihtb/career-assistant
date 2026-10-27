@@ -13,7 +13,6 @@ tidak ditampilkan, karena bisa memuat potongan data CV.
 """
 
 import logging
-import os
 from datetime import date
 from functools import partial
 from typing import Any
@@ -47,7 +46,7 @@ from src.cv.letter import (
 from src.cv.letter_file import letter_to_docx, letter_to_pdf
 from src.cv.match import JobMatch
 from src.cv.profile import CVProfile
-from src.repositories.job_repository import get_jobs_by_ids
+from src.repositories.job_repository import get_jobs_by_ids, sqlite_path
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +254,7 @@ def _save_contact(state: dict[str, Any], key: str) -> None:
 def _description(job_id: int) -> str | None:
     """Deskripsi lowongan dari database; ``None`` jika gagal (surat tetap bisa dibuat)."""
     try:
-        jobs = get_jobs_by_ids(os.getenv("DB_SQLITE_PATH", "./data/database.sqlite"), [job_id])
+        jobs = get_jobs_by_ids(sqlite_path(), [job_id])
     except Exception:  # deskripsi hanya pelengkap prompt dan tab Ringkasan
         logger.exception("Gagal mengambil deskripsi lowongan untuk surat lamaran")
         return None

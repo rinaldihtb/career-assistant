@@ -8,7 +8,6 @@ lokasi, riwayat kerja, dan teks CV tidak dikirim ke LLM.
 """
 
 import operator
-import os
 import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, TypedDict, cast
@@ -46,7 +45,7 @@ from src.agents.sql_agent import SQLQueryResult, finalize_answer
 from src.cv.match import MatchResult, match_role
 from src.cv.profile import CVProfile
 from src.models.agent import AgentResult, LLMUsage
-from src.repositories.job_repository import JobRepository
+from src.repositories.job_repository import JobRepository, sqlite_path
 
 MAX_SUBTASKS = 3
 AgentName = Literal["sql", "rag"]
@@ -708,7 +707,7 @@ class SupervisorAgent:
             profile.skills if profile is not None else [],
             embeddings=embeddings,
             vector_store=store,
-            db_path=os.getenv("DB_SQLITE_PATH", "./data/database.sqlite"),
+            db_path=sqlite_path(),
         )
 
     def synthesize(self, state: SupervisorState) -> dict[str, AgentResult | list[AgentResult]]:

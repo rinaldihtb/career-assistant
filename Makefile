@@ -1,6 +1,7 @@
 PYTHON ?= python
 
-.PHONY: help clean-data seed-database seed-vector seed-all run test lint sample-sql sample-sql-llm sample-rag sample-rag-llm sample-supervisor supervisor-graph
+.PHONY: help clean-data seed-database seed-vector seed-all run api test lint
+.PHONY: eval eval-cv eval-cv-chat sample-cv sample-plan sample-letter
 
 help:
 	@echo "Available commands:"
@@ -11,13 +12,13 @@ help:
 	@echo "  make run                Run the Streamlit app"
 	@echo "  make api                Run the FastAPI backend used by the Asisten page"
 	@echo "  make test               Run unit tests (no API key needed)"
-	@echo "  make lint               Ruff check for agent, repository, model, and test files"
-	@echo "  make sample-sql         Check SQL tools on the real database (no LLM)"
-	@echo "  make sample-sql-llm     Smoke test the SQL agent with the real LLM"
-	@echo "  make sample-rag         Check RAG retrieval on real Qdrant (embedding only)"
-	@echo "  make sample-rag-llm     Smoke test the RAG agent with the real LLM"
-	@echo "  make sample-supervisor  Smoke test supervisor routing with the real LLM"
-	@echo "  make supervisor-graph   Print the supervisor LangGraph as Mermaid (no API key)"
+	@echo "  make lint               Ruff check for src and tests"
+	@echo "  make eval               Assistant eval set without CV (real LLM, ARGS=\"--label x\")"
+	@echo "  make eval-cv            Cocokkan CV eval set on the fictional CVs (real LLM)"
+	@echo "  make eval-cv-chat       Assistant eval set with an active CV (real LLM)"
+	@echo "  make sample-cv          Profile extraction on your own CV (ARGS=path/to/cv.pdf)"
+	@echo "  make sample-plan        Skill Gap learning plan metrics (real LLM)"
+	@echo "  make sample-letter      Cover letter metrics (real LLM)"
 
 clean-data:
 	$(PYTHON) -m scripts.clean_data
@@ -33,66 +34,29 @@ seed-all: clean-data seed-database seed-vector
 run:
 	$(PYTHON) -m streamlit run src/app.py
 
+api:
+	$(PYTHON) -m uvicorn src.api:app --reload --port 8000
+
 test:
 	$(PYTHON) -m pytest
 
 lint:
-	$(PYTHON) -m ruff check src/agents src/repositories src/models src/cv src/evaluation tests
-
-sample-sql:
-	$(PYTHON) -m src.agents.sql_sample
-
-sample-sql-llm:
-	$(PYTHON) -m src.agents.sql_sample --llm
-
-sample-rag:
-	$(PYTHON) -m src.agents.rag_sample
-
-sample-rag-llm:
-	$(PYTHON) -m src.agents.rag_sample --llm
-
-sample-supervisor:
-	$(PYTHON) -m src.agents.supervisor_sample
-
-supervisor-graph:
-	$(PYTHON) -m src.agents.supervisor_sample --graph
-
-.PHONY: eval
+	$(PYTHON) -m ruff check src tests
 
 eval:
 	$(PYTHON) -m src.evaluation.run_eval $(ARGS)
 
-.PHONY: sample-cv
-
-sample-cv:
-	$(PYTHON) -m src.cv.profile_sample $(ARGS)
-
-.PHONY: sample-match
-
-sample-match:
-	$(PYTHON) -m src.cv.match_sample $(ARGS)
-
-.PHONY: eval-cv
-
 eval-cv:
 	$(PYTHON) -m src.evaluation.run_cv_eval $(ARGS)
-
-.PHONY: eval-cv-chat
 
 eval-cv-chat:
 	$(PYTHON) -m src.evaluation.run_cv_chat_eval $(ARGS)
 
-.PHONY: sample-plan
+sample-cv:
+	$(PYTHON) -m src.cv.profile_sample $(ARGS)
 
 sample-plan:
 	$(PYTHON) -m src.cv.plan_sample $(ARGS)
 
-.PHONY: sample-letter
-
 sample-letter:
 	$(PYTHON) -m src.cv.letter_sample $(ARGS)
-
-.PHONY: api
-
-api:
-	$(PYTHON) -m uvicorn src.api:app --reload --port 8000

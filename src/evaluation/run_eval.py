@@ -19,7 +19,6 @@ karena penilaian butuh rute dan pertanyaan mandiri per sub-tugas, bukan hanya ja
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import time
 from collections import defaultdict
@@ -42,7 +41,7 @@ from src.evaluation.checks import (
     split_citations,
 )
 from src.models.agent import AgentResult
-from src.repositories.job_repository import connect_readonly, get_jobs_by_ids
+from src.repositories.job_repository import connect_readonly, get_jobs_by_ids, sqlite_path
 
 CASES_PATH = Path("tests/eval/queries.yaml")
 RESULTS_DIR = Path("tests/eval/results")
@@ -292,7 +291,7 @@ def main() -> None:
     from src.containers import get_supervisor_agent  # import di sini: butuh .env
 
     graph = get_supervisor_agent().graph
-    db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+    db_path = sqlite_path()
     cases = load_cases(args.cases, args.only)
 
     records = []
@@ -308,7 +307,7 @@ def rescore_file(args: argparse.Namespace, started: datetime) -> None:
     """Nilai ulang file hasil lama dengan queries.yaml sekarang (tanpa LLM, tanpa .env)."""
     old = json.loads(args.rescore.read_text(encoding="utf-8"))
     old_records = {record["id"]: record for record in old["cases"]}
-    db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+    db_path = sqlite_path()
     cases = [case for case in load_cases(args.cases, args.only) if case["id"] in old_records]
 
     records = []

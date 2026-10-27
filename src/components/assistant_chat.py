@@ -217,12 +217,6 @@ def _clear_messages() -> None:
 # --- Tampilan ----------------------------------------------------------------
 
 
-# def render_result_2(result: dict[str, Any]) -> None:
-#     """Tampilkan jawaban terakhir dari state supervisor agent."""
-#     content = result["messages"][-1].content
-#     st.markdown(content if isinstance(content, str) else str(content))
-
-
 def _render_cv_banner(cv: dict[str, Any] | None) -> None:
     """Status CV di atas chat dan tombol ke Cocokkan CV (0 LLM)."""
     if cv:

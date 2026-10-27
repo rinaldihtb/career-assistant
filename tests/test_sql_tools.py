@@ -9,7 +9,7 @@ from sqlalchemy.exc import DBAPIError
 
 from src.agents.prompts import SQL_NO_SALARY_NOTE, SQL_SCHEMA_COLUMNS, SQL_TRUNCATED_NOTE
 from src.agents.sql_agent import SqlAgent, complete_job_list, finalize_answer
-from src.repositories.job_repository import connect_readonly
+from src.repositories.job_repository import DEFAULT_DB_PATH, connect_readonly, sqlite_path
 
 REAL_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
 
@@ -265,3 +265,11 @@ def test_truncated_note_when_rows_reach_limit():
 
 def test_empty_rows_leave_answer_unchanged():
     assert finalize_answer("Tidak ada lowongan.", []) == "Tidak ada lowongan."
+
+
+def test_sqlite_path_reads_env_at_call_time(monkeypatch, tmp_path):
+    monkeypatch.delenv("DB_SQLITE_PATH", raising=False)
+    assert sqlite_path() == DEFAULT_DB_PATH == "./data/database.sqlite"
+
+    monkeypatch.setenv("DB_SQLITE_PATH", str(tmp_path / "jobs.sqlite"))
+    assert sqlite_path() == str(tmp_path / "jobs.sqlite")

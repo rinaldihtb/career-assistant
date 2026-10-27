@@ -1,5 +1,6 @@
 """Read-only access to job postings for application and batch workflows."""
 
+import os
 import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
@@ -28,6 +29,18 @@ JOB_DETAIL_COLUMNS = (
     "salary_currency",
     "status",
 )
+
+DEFAULT_DB_PATH = "./data/database.sqlite"
+
+
+def sqlite_path() -> str:
+    """Path SQLite dari env ``DB_SQLITE_PATH``, default ``./data/database.sqlite``.
+
+    Env dibaca saat dipanggil, bukan saat import, supaya ``load_dotenv`` dan
+    ``monkeypatch.setenv`` di test berlaku. Dipakai fungsi yang menerima ``db_path``: fitur
+    CV, gold SQL eval, ``match_role``, dan skrip sample.
+    """
+    return os.getenv("DB_SQLITE_PATH", DEFAULT_DB_PATH)
 
 
 def connect_readonly(db_path: str | Path) -> sqlite3.Connection:

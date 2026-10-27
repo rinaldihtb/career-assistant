@@ -12,7 +12,6 @@ CV dan profil hanya disimpan di ``st.session_state``, tidak di disk atau log.
 """
 
 import logging
-import os
 import typing
 from dataclasses import dataclass
 from typing import Any
@@ -24,7 +23,7 @@ from src.cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
 from src.cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
 from src.cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
 from src.helpers.format import format_salary
-from src.repositories.job_repository import get_jobs_by_ids
+from src.repositories.job_repository import get_jobs_by_ids, sqlite_path
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +81,7 @@ def load_dependencies() -> CVDependencies:
         llm=LLM_MODEL,
         embeddings=EMBEDDING,
         vector_store=VECTOR_DB,
-        db_path=_db_path(),
+        db_path=sqlite_path(),
     )
 
 
@@ -323,15 +322,11 @@ def _match(profile: CVProfile, deps: CVDependencies) -> MatchResult:
 def _descriptions(job_ids: list[int]) -> dict[int, str]:
     """Deskripsi untuk "Lihat detail"; kosong jika database gagal (kartu tetap tampil)."""
     try:
-        jobs = get_jobs_by_ids(_db_path(), job_ids)
+        jobs = get_jobs_by_ids(sqlite_path(), job_ids)
     except Exception:  # detail hanya pelengkap kartu
         logger.exception("Gagal mengambil deskripsi lowongan untuk kartu Cocokkan CV")
         return {}
     return {job["id"]: job["job_description"] for job in jobs if job.get("job_description")}
-
-
-def _db_path() -> str:
-    return os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
 
 
 # --- Helper tanpa Streamlit (bisa dites langsung) -------------------------------

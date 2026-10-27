@@ -11,7 +11,6 @@ skor butuh kemiripan profil dari Qdrant, dan halaman surat memakai hasil pencoco
 """
 
 import logging
-import os
 from typing import Any
 
 import streamlit as st
@@ -24,7 +23,7 @@ from src.containers import get_job_repository
 from src.cv.ingest import CV_STATE_KEY
 from src.cv.match import JobMatch, JobSkillIndex, load_job_skill_index
 from src.cv.skills import build_cv_skills, match_skills
-from src.repositories.job_repository import JobRepository
+from src.repositories.job_repository import JobRepository, sqlite_path
 from src.repositories.job_search import (
     JobFilters,
     JobListing,
@@ -178,7 +177,7 @@ def _render_detail(job: JobListing, repository: JobRepository) -> None:
 
     cv_state = st.session_state.get(CV_STATE_KEY)
     description = _description(job.id, repository)
-    index = _skill_index(_db_path())
+    index = _skill_index(sqlite_path())
     if cv_state is None:
         _render_actions_without_cv(job)
         st.divider()
@@ -271,11 +270,6 @@ def _skill_index(db_path: str) -> JobSkillIndex | None:
     except Exception:  # skill hanya bagian dari panel detail
         logger.exception("Gagal membangun indeks skill untuk Cari Lowongan")
         return None
-
-
-def _db_path() -> str:
-    """Path SQLite untuk indeks skill ``src.cv.match``, yang masih membaca database lewat path."""
-    return os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
 
 
 # --- Helper tanpa Streamlit (bisa dites langsung) -------------------------------

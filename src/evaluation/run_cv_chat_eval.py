@@ -32,7 +32,6 @@ dihitung lulus/gagal.
 import argparse
 import hashlib
 import json
-import os
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -61,6 +60,7 @@ from src.evaluation.checks import (
 )
 from src.evaluation.run_eval import graph_input, run_metadata
 from src.models.agent import AgentResult
+from src.repositories.job_repository import sqlite_path
 
 CASES_PATH = Path("tests/eval/cv_chat_cases.yaml")
 RESULTS_DIR = Path("tests/eval/results")
@@ -320,7 +320,7 @@ def main() -> None:
     args = parser.parse_args()
 
     started = datetime.now(UTC).astimezone()
-    db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+    db_path = sqlite_path()
     profiles_path, cases = load_cases(args.cases, args.only)
     profiles = load_profiles(profiles_path, db_path)
     meta = {

@@ -4,8 +4,8 @@ Semua fungsi di sini murni: menerima jawaban, ID, dan hasil gold SQL, lalu
 mengembalikan lulus/gagal beserta alasannya. Runner (``run_eval.py``) yang
 memanggil supervisor dan database; file ini bisa dites tanpa API key.
 
-Kenapa tanpa LLM-as-judge: kunci jawaban dihitung dari gold SQL, jadi angka dan
-ID bisa dicocokkan langsung. Hasilnya bisa diulang dan tidak menambah token.
+Tanpa LLM-as-judge: kunci jawaban dihitung dari gold SQL, jadi angka dan ID bisa
+dicocokkan langsung. Hasilnya bisa diulang dan tidak menambah token.
 LLM-as-judge baru layak jika muncul kriteria yang tidak bisa diukur seperti ini.
 """
 

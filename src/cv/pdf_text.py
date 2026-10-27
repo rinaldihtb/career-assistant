@@ -1,12 +1,12 @@
 """Ekstraksi teks CV dari PDF yang punya lapisan teks (tanpa OCR).
 
-Kenapa membaca lapisan teks, bukan OCR: CV yang diekspor dari Word, Google Docs,
+Lapisan teks dibaca, bukan OCR: CV yang diekspor dari Word, Google Docs,
 atau Canva hampir selalu punya lapisan teks. Membacanya butuh milidetik dan
 hasilnya persis; OCR butuh binary sistem di container, 1-3 detik per halaman, dan
 bisa salah huruf. PDF tanpa teks (hasil scan, foto, atau teks yang diubah jadi
 gambar) ditolak dengan pesan yang menjelaskan cara memperbaikinya.
 
-Kenapa pypdf: Python murni berlisensi BSD (tanpa binary), dan pada korpus kalibrasi
+pypdf dipakai karena Python murni berlisensi BSD (tanpa binary), dan pada korpus kalibrasi
 (CV 1 kolom, 2 kolom berbasis tabel, 2 kolom posisi bebas, 3 halaman) hasilnya
 setara pypdfium2: semua skill terbaca dan kolom tidak tercampur. pypdfium2 lebih
 cepat (1-7 ms vs 3-65 ms per CV) tapi selisih itu tidak terasa di samping satu

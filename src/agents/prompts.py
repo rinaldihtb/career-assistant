@@ -1,8 +1,7 @@
 """Semua prompt dan pesan tetap untuk agent dan fitur CV. File ini tidak berisi logika.
 
-Kenapa dipisah: prompt adalah bagian yang paling sering diubah saat
-memperbaiki kualitas jawaban. Di file terpisah, diff-nya mudah direview
-di PR tanpa tercampur perubahan logika.
+Prompt paling sering diubah saat memperbaiki kualitas jawaban; di file sendiri, diff-nya
+direview tanpa tercampur perubahan logika.
 
 Placeholder ``{...}`` diisi dengan ``str.format`` oleh agent.
 """
@@ -121,8 +120,8 @@ Error:
 
 Tulis ulang query yang benar sesuai aturan."""
 
-# Contoh format sitasi sengaja memakai <id>, bukan angka: baseline eval menunjukkan
-# LLM menyalin "[ID:123]" dari contoh lama menjadi ID palsu (T6b-02, T7-01).
+# Contoh format sitasi sengaja memakai <id>, bukan angka: dengan contoh berangka, LLM
+# menyalin "[ID:123]" menjadi ID palsu (T6b-02, T7-01).
 # Aturan pertama menjaga argumen tool sama dengan pertanyaan mandiri dari planner: tanpa
 # aturan itu "Berapa jumlah lowongan ..." dikirim sebagai permintaan daftar (T3-03) dan
 # "Berapa rata-rata gaji ..." sebagai hitungan (T6a-05).
@@ -227,10 +226,10 @@ RAG_FAILED_MESSAGE = "Maaf, pencarian lowongan sedang bermasalah. Coba beberapa 
 
 # Satu panggilan LLM: memilih jenis respons, memecah pertanyaan menjadi sub-tugas
 # per agent, DAN menulis ulang setiap sub-tugas menjadi pertanyaan mandiri.
-# Aturan "pertahankan maksud" dan "jangan membuang bagian" berasal dari baseline
-# eval 17 Okt 2026: router lama mengubah permintaan daftar menjadi "Berapa jumlah"
-# dan membuang bagian kedua pertanyaan majemuk. Contoh di bawah sengaja tidak
-# diambil dari tests/eval/queries.yaml, supaya eval menguji aturan, bukan hafalan.
+# Aturan "pertahankan maksud" dan "jangan membuang bagian" ada karena router lama mengubah
+# permintaan daftar menjadi "Berapa jumlah" dan membuang bagian kedua pertanyaan majemuk.
+# Contoh di bawah sengaja tidak diambil dari tests/eval/queries.yaml, supaya eval menguji
+# aturan, bukan hafalan.
 # Contoh clarify untuk permintaan tanpa konteks tidak memakai kalimat kasus eval: dengan contoh
 # "Ada info kerjaan?" (sama dengan C8-01), planner ber-CV menjawab C8-01 out_of_scope di 3 dari
 # 4 run, bukan cv_match.
@@ -413,9 +412,10 @@ SUPERVISOR_REFUSE_MESSAGE = (
 )
 
 SUPERVISOR_UNSUPPORTED_MESSAGE = (
-    "Maaf, informasi itu tidak ada di data kami. Data lowongan kami memuat judul, "
-    "perusahaan, lokasi, tipe kerja, deskripsi, dan gaji (untuk sebagian lowongan), "
-    "tetapi tidak memuat tanggal posting, ulasan perusahaan, atau status lamaran."
+    "Maaf, pertanyaan itu belum bisa dijawab dari data kami. Data lowongan memuat judul, "
+    "perusahaan, lokasi, tipe kerja, deskripsi, dan gaji (untuk sebagian lowongan). Tanggal "
+    "posting, ulasan perusahaan, status lamaran, dan statistik skill di seluruh lowongan "
+    "belum tersedia."
 )
 
 SUPERVISOR_DECLINED_NOTE = (

@@ -21,7 +21,6 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
-from langchain_core.tools.base import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, Field
 from qdrant_client import models
@@ -96,10 +95,6 @@ class RagAgent:
             tools=[retrieve_jobs_tool],
             name="rag_worker",
         )
-
-    def as_tool(self) -> BaseTool:
-        """Ekspos RAG agent sebagai tool untuk supervisor agent biasa."""
-        return self.create_rag_agent().as_tool()
 
     def retrieve_jobs(
         self,

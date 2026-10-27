@@ -20,7 +20,6 @@ tidak dicetak, dan tidak ada yang ditulis ke disk. Metrik per surat:
 Kode penyaring hanya ditambahkan jika salah satu metrik pelanggaran terukur lebih dari 0.
 """
 
-import os
 import re
 import sys
 import time
@@ -38,10 +37,10 @@ from src.cv.letter import (
 )
 from src.cv.match import match_jobs
 from src.cv.skills import build_cv_skills, vocab_in_text
-from src.repositories.job_repository import get_jobs_by_ids
+from src.repositories.job_repository import get_jobs_by_ids, sqlite_path
 
 load_dotenv()
-DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+DB_PATH = sqlite_path()
 DEFAULT_DIR = Path("tests/eval/cv")
 SETTINGS = (
     LetterSettings(language="id", words=250),

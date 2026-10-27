@@ -15,9 +15,6 @@ def render_navigation() -> None:
     ``st.session_state`` saja, jadi tampil sama di semua halaman.
     """
     with st.sidebar:
-        # st.title("App Name")
-        # st.caption("App Description")
-        # st.divider()
         st.page_link("pages/home_page.py", label="Beranda")
         st.page_link("pages/jobsearch_page.py", label="Cari Lowongan")
         st.page_link(CV_PAGE, label="Cocokkan CV")

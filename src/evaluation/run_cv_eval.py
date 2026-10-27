@@ -34,7 +34,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import statistics
 import subprocess
@@ -63,7 +62,7 @@ from src.cv.match import (
 from src.cv.pdf_text import CVRejectedError, extract_cv_text
 from src.cv.profile import Achievement, CVProfile, extract_cv_profile
 from src.cv.skills import CVSkills, build_cv_skills, match_skills
-from src.repositories.job_repository import connect_readonly
+from src.repositories.job_repository import connect_readonly, sqlite_path
 
 CASES_PATH = Path("tests/eval/cv_cases.yaml")
 RESULTS_DIR = Path("tests/eval/results")
@@ -762,7 +761,7 @@ def main() -> None:
 
     started = datetime.now(UTC).astimezone()  # waktu lokal dengan zona waktu
     load_dotenv()
-    db_path = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+    db_path = sqlite_path()
     titles = load_titles(db_path)
     cases = load_cases(args.cases, args.only)
     records: list[dict[str, Any]] = []

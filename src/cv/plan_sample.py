@@ -12,7 +12,6 @@ tidak ada di daftar skill gap (aturan 3 prompt ``CV_PLAN_SYSTEM``). Kode penyari
 ditambahkan jika angka ini terukur lebih dari 0.
 """
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -23,9 +22,10 @@ from src.cv.gap import compute_skill_gap
 from src.cv.ingest import ingest_cv
 from src.cv.match import match_jobs
 from src.cv.plan import PLAN_WEEKS, generate_learning_plan
+from src.repositories.job_repository import sqlite_path
 
 load_dotenv()
-DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
+DB_PATH = sqlite_path()
 DEFAULT_DIR = Path("tests/eval/cv")
 
 
