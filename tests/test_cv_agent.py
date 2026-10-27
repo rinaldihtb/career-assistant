@@ -6,6 +6,8 @@ from src.agents.prompts import (
     CV_FAILED_MESSAGE,
     CV_GAP_PLAN,
     CV_NO_MATCHES_MESSAGE,
+    CV_ROLE_EMPTY_MESSAGE,
+    CV_ROLE_FAILED_MESSAGE,
 )
 from src.components.assistant_chat import split_rag_answer
 from src.cv.match import JobMatch, MatchResult
@@ -163,3 +165,50 @@ def test_profile_label():
     assert profile_label(CVProfile(experience_months=0)) == "0-1 tahun"
     assert profile_label(CVProfile()) == ""
     assert profile_label(None) == ""
+
+
+# --- cv_role ---------------------------------------------------------------------
+
+
+def test_role_answer_lists_gap_owned_skills_and_top_jobs():
+    result = run_cv_agent(
+        kind="cv_role",
+        profile=PROFILE,
+        matches=matches(
+            job(31, 0.9, matched=["Excel"], missing=["Jira", "Scrum"], job_title="Project Manager"),
+            job(32, 0.8, missing=["Jira"], job_title="IT Project Manager"),
+        ),
+        role=" Project\nManager ",
+    )
+
+    assert result.source == "cv" and result.error is None
+    assert result.job_ids == [31, 32]
+    assert result.answer.startswith("Untuk posisi Project Manager: dari 2 lowongan")
+    assert "- Jira: 2 dari 2 lowongan" in result.answer
+    assert "Excel (1 dari 2)" in result.answer
+    intro, notes = split_rag_answer(result.answer)
+    assert notes == {
+        31: "skill CV-mu yang disebut: Excel",
+        32: "belum menyebut skill dari CV-mu",
+    }
+    assert "[ID:" not in intro
+
+
+def test_role_answer_reports_failure_without_error_text_in_answer():
+    result = run_cv_agent(
+        kind="cv_role",
+        profile=PROFILE,
+        matches=MatchResult(error="Embedding error: 403 rahasia"),
+        role="Product Manager",
+    )
+
+    assert result.answer == CV_ROLE_FAILED_MESSAGE.format(role="Product Manager")
+    assert result.error == "Embedding error: 403 rahasia"
+    assert result.job_ids == []
+
+
+def test_role_answer_without_jobs():
+    result = run_cv_agent(kind="cv_role", profile=PROFILE, matches=matches(), role="Pilot")
+
+    assert result.answer == CV_ROLE_EMPTY_MESSAGE.format(role="Pilot")
+    assert result.error is None

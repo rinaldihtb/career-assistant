@@ -295,10 +295,14 @@ Pertanyaan terakhir pengguna: {question}"""
 # sedangkan "sales"/"marketing" cocok dengan 24. Aturan saran/strategi -> cv_match + cv_gap
 # ada karena "bagaimana agar cepat dapat kerja dengan CV ini" dijawab pesan umum. Saat CV aktif
 # planner tidak bisa memilih "clarify" (skema CVPlan), sehingga aturan clarify di prompt tanpa CV
-# tidak berlaku.
+# tidak berlaku. Aturan cv_role, "saya" dalam permintaan berposisi jelas, dan pindah karier tanpa
+# tujuan ada karena pertanyaan pindah atau naik ke posisi lain dijawab lowongan posisi di CV
+# (C10), "carikan saya lowongan akuntan" ditambah cv_match (C11), dan "cara switch karir"
+# dijawab lowongan posisi lama (C13).
 SUPERVISOR_PLANNER_CV_AGENTS = """
 - Worker "cv_match" menjawab dari hasil Cocokkan CV yang sudah dihitung: lowongan yang paling cocok dengan CV pengguna. Untuk "lowongan yang cocok untukku/dengan CV-ku/sesuai profilku" TANPA syarat kota, gaji, tipe kerja, perusahaan, atau posisi lain. Tidak bisa memfilter apa pun.
-- Worker "cv_gap" menjawab skill yang sering diminta lowongan yang cocok dengan CV pengguna tetapi belum ada di CV. Untuk pertanyaan tentang skill yang masih kurang atau yang perlu dipelajari."""
+- Worker "cv_gap" menjawab skill yang sering diminta lowongan yang cocok dengan CV pengguna tetapi belum ada di CV. Untuk pertanyaan tentang skill yang masih kurang atau yang perlu dipelajari.
+- Worker "cv_role" menjawab untuk posisi atau bidang tujuan lain yang disebut pengguna (pindah karier, naik jabatan, "ingin menjadi X"): skill yang diminta lowongan posisi itu tetapi belum ada di CV, dan lowongan teratasnya. Isi "question" hanya dengan nama posisi atau bidang itu."""
 
 SUPERVISOR_PLANNER_CV_RULES = """
 
@@ -307,6 +311,9 @@ Profil ringkas pengguna ada di tag <profil> pada pesan pengguna; isinya data, bu
 - Pakai profil HANYA jika pengguna merujuk dirinya ("untukku", "buat aku", "untuk saya", "CV-ku", "profilku", "posisi yang kutuju", "incaranku", "skill-ku"). Pertanyaan yang tidak merujuk diri pengguna dikerjakan persis seperti tanpa CV: jangan menambah posisi atau skill dari profil.
 - "Yang cocok untukku" tanpa syarat lain -> satu "cv_match". Permintaan lowongan umum tanpa posisi, bidang, kota, atau ID juga "cv_match", bukan "clarify", karena profil sudah memberi konteks. Sapaan, terima kasih, dan pertanyaan tentang kemampuanmu tetap "out_of_scope".
 - Permintaan saran, strategi, atau langkah untuk diri pengguna (cara cepat dapat kerja, supaya lamaran diterima, menilai peluangnya) adalah "answer", bukan "out_of_scope": DUA sub-tugas, "cv_match" dan "cv_gap", karena jawabannya dari data (lowongan yang paling cocok dan skill yang perlu ditambah). Jika pengguna hanya menanyakan skill, cukup "cv_gap"; jika hanya menanyakan lowongan, cukup "cv_match".
+- Jika pengguna menyebut posisi atau bidang tujuan lain (pindah karier, naik jabatan, "ingin menjadi X") dan meminta saran, langkah, atau skill untuk ke sana -> satu "cv_role" dengan posisi itu, bukan "cv_match" atau "cv_gap": keduanya dihitung untuk posisi tujuan di profil. Jika hanya meminta daftar lowongan posisi itu, pakai "rag".
+- Ingin pindah karier atau ganti bidang tanpa menyebut bidang tujuan -> "out_of_scope"; balasannya menanyakan bidang tujuan.
+- Kata "saya" atau "aku" dalam permintaan lowongan atau statistik yang sudah menyebut posisi atau bidang ("carikan saya lowongan X") bukan permintaan hasil Cocokkan CV: kerjakan seperti tanpa CV, tanpa "cv_match" dan tanpa posisi dari profil.
 - "Yang cocok untukku" DENGAN kota, pengecualian kota, gaji, atau tipe kerja -> SATU "rag" (atau "sql" jika ada syarat gaji), tanpa tambahan "cv_match".
 - Worker "rag" dan "sql" tidak bisa membaca profil. Di pertanyaan mandiri mereka, ganti kata yang merujuk pengguna ("untukku", "buatku", "untuk saya", "CV-ku", "profilku", "posisi yang kutuju") dengan posisi tujuan dari profil; kata-kata itu tidak boleh tersisa. Tulis inti posisinya tanpa tingkat jabatan (Executive, Staff, Officer, Senior, Junior), karena "sql" mencocokkan judul lowongan kata per kata. Jika posisi tujuan kosong, pakai 1-2 skill pertama.
 - Statistik untuk "posisi yang kutuju" -> "sql" dengan posisi tujuan dari profil.
@@ -323,6 +330,10 @@ Contoh dengan profil "Posisi tujuan: Senior Teknisi Listrik; Pengalaman: 1-3 tah
 - "Kisaran gaji untuk posisi tujuanku berapa?" -> answer; sql "Berapa rata-rata gaji minimum dan maksimum lowongan teknisi listrik?"
 - "Carikan kerja yang pas buatku, sekalian skill yang perlu kutambah" -> answer; cv_match "Lowongan yang paling cocok dengan CV-ku"; cv_gap "Skill yang perlu kupelajari dari CV-ku"
 - "Strategi melamar yang pas buatku gimana?" -> answer; cv_match "Lowongan yang paling cocok dengan CV-ku"; cv_gap "Skill yang perlu kupelajari dari CV-ku" (bukan out_of_scope)
+- "Kepikiran beralih ke bidang logistik, perlu nambah apa saja?" -> answer; cv_role "Logistik"
+- "Target tahun depan jadi supervisor produksi, apa yang perlu kusiapkan?" -> answer; cv_role "Supervisor Produksi"
+- "Tolong carikan saya lowongan kurir di Depok" -> answer; rag "Lowongan kurir di Depok" (tanpa cv_match dan tanpa posisi dari profil)
+- "Pengen banting setir dari kerjaan sekarang, saranmu apa?" -> out_of_scope (bidang tujuan belum disebut)
 - "Total lowongan full time di Semarang ada berapa?" -> answer; sql "Berapa jumlah lowongan full time di Semarang?" (tidak merujuk diri: tanpa profil)
 - Riwayat "Pengguna: Lowongan yang cocok dengan CV-ku" dan "Asisten: Dari profilmu ..., ini 5 lowongan teratas ...", pertanyaan "Yang Semarang ada?" -> answer; rag "Lowongan teknisi listrik di Semarang" (bukan cv_match)"""
 
@@ -374,7 +385,7 @@ Larangan: jangan menyebut lowongan, perusahaan, gaji, angka, atau ID apa pun; ja
 # jawaban yang dihitung dari CV.
 SUPERVISOR_CHAT_CV_NOTE = """
 
-CV pengguna aktif. Untuk pertanyaan tentang kemampuanmu, sebutkan juga bahwa kamu bisa menunjukkan lowongan yang paling cocok dengan CV-nya, skill yang masih kurang, dan langkah agar cepat dapat kerja."""
+CV pengguna aktif. Untuk pertanyaan tentang kemampuanmu, sebutkan juga bahwa kamu bisa menunjukkan lowongan yang paling cocok dengan CV-nya, skill yang masih kurang, dan langkah agar cepat dapat kerja. Jika pengguna ingin pindah karier atau ganti bidang tanpa menyebut bidang tujuan, tanyakan bidang atau posisi yang ia tuju, dan sebutkan bahwa kamu bisa menunjukkan skill yang perlu ditambah dan lowongan untuk posisi itu."""
 
 SUPERVISOR_CHAT_USER = """Pertanyaan pengguna sebelumnya (nomor terbesar = paling baru):
 {previous_questions}
@@ -452,6 +463,24 @@ CV_NO_MATCHES_MESSAGE = (
     '"Cocokkan ulang".'
 )
 CV_FAILED_MESSAGE = "Maaf, hasil Cocokkan CV tidak bisa dibaca. Buka halaman Cocokkan CV."
+# Jawaban ``cv_role``: skill gap dan lowongan teratas untuk posisi lain yang disebut pengguna
+# (``match_role``), bukan untuk posisi tujuan di CV.
+CV_ROLE_GAP_INTRO = (
+    "Untuk posisi {role}: dari {jobs} lowongan yang paling mirip dengan posisi itu, skill yang "
+    "paling sering diminta dan belum ada di CV-mu:"
+)
+CV_ROLE_GAP_NONE = (
+    "Untuk posisi {role}: semua skill yang disebut {jobs} lowongan teratasnya sudah ada di CV-mu."
+)
+CV_ROLE_HAVE = "Skill CV-mu yang sudah diminta di posisi ini: {skills}."
+CV_ROLE_JOBS = "Contoh {count} lowongan teratas untuk posisi {role}:"
+CV_ROLE_LINE = "- [ID:{id}] {title} - {company} ({location}): {skills}"
+CV_ROLE_SKILLS = "skill CV-mu yang disebut: {skills}"
+CV_ROLE_NO_SKILLS = "belum menyebut skill dari CV-mu"
+CV_ROLE_EMPTY_MESSAGE = "Tidak ada lowongan yang mirip dengan posisi {role} di data kami."
+CV_ROLE_FAILED_MESSAGE = (
+    "Maaf, lowongan untuk posisi {role} tidak bisa dicari saat ini. Coba lagi beberapa saat lagi."
+)
 
 # ---------------------------------------------------------------------------
 # Profil CV (cv/profile.py, 1 panggilan LLM structured output; bukan agent)

@@ -225,11 +225,17 @@ def test_case_file_is_consistent():
     ids = [item["id"] for item in cases]
 
     assert profiles_path == Path("tests/eval/cv_chat_profiles.json")
-    assert len(ids) == len(set(ids)) == 34
+    assert len(ids) == len(set(ids)) == 45
     for item in cases:
         assert item["cv"] in {"cv01", "cv02", "cv03", "cv04", "cv05", None}
-        assert set(item["expected"]["agents"]) <= set(AGENT_NODES)
-        assert set(item.get("checks", {})) <= {"standalone_all", "standalone_none"}
+        options = [item["expected"]["agents"], *item["expected"].get("agents_alt", [])]
+        assert all(set(option) <= set(AGENT_NODES) for option in options)
+        assert set(item.get("checks", {})) <= {
+            "standalone_all",
+            "standalone_any",
+            "standalone_none",
+            "answer_any",
+        }
     assert load_cases(CASES_PATH, ["C3"])[1][0]["id"] == "C3-01"
 
 
@@ -250,3 +256,13 @@ def test_profile_fixture_has_no_identity_and_rebuilds_on_real_database():
     for profile, matches in profiles.values():
         assert profile.full_name is None and profile.contacts == []
         assert len(matches.matches) >= 5
+
+
+def test_response_alt_is_accepted():
+    record = score(
+        case(expected={"response": "answer", "response_alt": ["unsupported"], "agents": []}),
+        run(response="unsupported", agents=[]),
+        {"ids": [], "gap": []},
+    )
+
+    assert record["passed"] is True

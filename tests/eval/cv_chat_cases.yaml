@@ -23,17 +23,28 @@
 # K7 (v1.2) Permintaan saran, strategi, atau langkah untuk diri pengguna ("bagaimana agar cepat
 #    dapat kerja dengan CV ini") -> cv_match + cv_gap, bukan out_of_scope: jawabannya dari data
 #    (lowongan paling cocok dan skill yang perlu ditambah), tanpa LLM tambahan.
+# K8 (v1.3) Pindah atau naik ke posisi/bidang lain yang disebut pengguna -> cv_role: skill gap
+#    dan lowongan teratas dihitung untuk posisi itu, bukan untuk posisi tujuan di CV.
+#    cv_match/cv_gap di sini menampilkan lowongan posisi lama yang tidak ditanyakan.
+# K9 (v1.3) Kata "saya" dalam permintaan lowongan atau statistik berposisi jelas ("carikan saya
+#    lowongan akuntan") bukan permintaan hasil Cocokkan CV: tanpa cv_match/cv_gap, tanpa posisi
+#    tujuan dari profil. Pertanyaan skill pasar tanpa rujukan diri tidak boleh dijawab cv_match
+#    atau cv_role. Statistik skill seluruh lowongan belum ada, jadi cv_gap (berlabel "dari 10
+#    lowongan yang paling cocok dengan CV-mu"), rag, sql, atau unsupported diterima.
+# K10 (v1.3) Ingin pindah karier tanpa menyebut bidang tujuan -> out_of_scope (balasan
+#    menanyakan bidang tujuan), bukan lowongan posisi lama.
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
 # expected.response : answer | clarify | refuse | out_of_scope | unsupported (default answer)
 # expected.agents   : agent per sub-tugas, urutan tidak dinilai; agents_alt: alternatif yang sah
+# expected.response_alt: jenis respons lain yang sah
 # expected.report_only: true -> hanya dicetak, tidak dihitung lulus/gagal
 # checks.standalone_all : daftar grup frasa; tiap grup minimal satu frasa ada di pertanyaan mandiri
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.2"
+version: "1.3"
 profiles: tests/eval/cv_chat_profiles.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -272,6 +283,107 @@ cases:
     cv: cv05
     question: Dengan profil ini aku sebaiknya mulai dari mana biar cepat kerja?
     expected: {agents: [cv_match, cv_gap]}
+
+  # --- C10: pindah atau naik ke posisi lain -> cv_role (K8) ----------------------
+  - id: C10-01
+    category: C10
+    cv: cv01
+    question: Aku mau pindah karier ke bidang keuangan, apa yang perlu kulakukan dengan CV ini?
+    expected: {agents: [cv_role]}
+    checks:
+      standalone_any: [keuangan, finance]
+      standalone_none: [data analyst]
+
+  - id: C10-02
+    category: C10
+    cv: cv03
+    question: saya ingin naik jadi project manager, apa yang harus saya lakukan?
+    expected: {agents: [cv_role]}
+    checks:
+      standalone_any: [project manager]
+      answer_any: [project, proyek]
+
+  - id: C10-03
+    category: C10
+    cv: cv02
+    question: Skill apa yang perlu kupelajari untuk menjadi product manager?
+    expected: {agents: [cv_role]}
+    checks:
+      standalone_any: [product manager]
+      standalone_none: [graphic, design]
+
+  - id: C10-04
+    category: C10
+    cv: cv05
+    question: Kalau mau beralih jadi data analyst, skill apa yang kurang dari CV saya?
+    expected: {agents: [cv_role]}
+    checks:
+      standalone_any: [data analyst]
+      answer_any: [data analyst, analis data]
+
+  # --- C11: "saya" dalam permintaan berposisi jelas -> tanpa agent CV (K9) ---------
+  - id: C11-01
+    category: C11
+    cv: cv01
+    question: carikan saya lowongan kerja tentang akuntan
+    expected: {agents: [rag]}
+    checks:
+      standalone_any: [akuntan, akuntansi, accounting]
+      standalone_none: [data analyst]
+
+  - id: C11-02
+    category: C11
+    cv: cv02
+    question: Saya mau lihat lowongan perawat di Medan
+    expected: {agents: [rag]}
+    checks:
+      standalone_all: [[perawat], [medan]]
+      standalone_none: [graphic, design, desain]
+
+  - id: C11-03
+    category: C11
+    cv: cv03
+    question: Saya penasaran, berapa rata-rata gaji sales di Jakarta?
+    expected: {agents: [sql]}
+    checks:
+      standalone_all: [[sales], [jakarta]]
+      standalone_none: [hr, human resource]
+
+  # --- C12: skill pasar tanpa rujukan diri -> tanpa agent CV (K9) ------------------
+  - id: C12-01
+    category: C12
+    cv: cv03
+    question: skill apa yang sangat sering diminta oleh para recruiter?
+    expected:
+      agents: [cv_gap]
+      agents_alt: [[rag], [sql], []]
+      response_alt: [unsupported]
+    checks:
+      standalone_none: [hr, human resource]
+
+  - id: C12-02
+    category: C12
+    cv: cv04
+    question: Software apa yang paling banyak dicari perusahaan di lowongan?
+    expected:
+      agents: [cv_gap]
+      agents_alt: [[rag], [sql], []]
+      response_alt: [unsupported]
+    checks:
+      standalone_none: [sales, marketing]
+
+  # --- C13: pindah karier tanpa bidang tujuan -> out_of_scope (K10) ----------------
+  - id: C13-01
+    category: C13
+    cv: cv01
+    question: bagaimana cara saya untuk switch karir
+    expected: {response: out_of_scope, agents: []}
+
+  - id: C13-02
+    category: C13
+    cv: cv04
+    question: Aku pengen ganti profesi, enaknya mulai dari mana?
+    expected: {response: out_of_scope, agents: []}
 
   # --- N: pertanyaan tentang CV saat CV belum ada (hanya dilaporkan) -------------
   - id: N-01

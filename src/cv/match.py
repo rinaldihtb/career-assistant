@@ -73,6 +73,10 @@ class MatchConfig(BaseModel):
     limit: int = Field(default=10, ge=1)
 
 
+# Pencocokan untuk posisi lain (``match_role``): urutan hanya dari kemiripan dengan nama posisi.
+ROLE_CONFIG = MatchConfig(semantic_weight=1.0)
+
+
 class JobMatch(BaseModel):
     """Satu lowongan hasil pencocokan, berisi data yang ditampilkan di kartu hasil."""
 
@@ -316,7 +320,58 @@ def match_jobs(
     text = (cv_text or "").strip() if config.query == "cv_text" else profile_query_text(profile)
     if not text:
         return MatchResult(error="Profil atau teks CV kosong")
+    return _match_text(
+        text,
+        profile.skills,
+        embeddings=embeddings,
+        vector_store=vector_store,
+        db_path=db_path,
+        config=config,
+    )
 
+
+def match_role(
+    role: str,
+    skills: list[str],
+    *,
+    embeddings: Embeddings,
+    vector_store: Any,
+    db_path: str | Path,
+) -> MatchResult:
+    """Lowongan teratas untuk posisi lain yang disebut pengguna. Satu embedding, nol LLM.
+
+    Yang di-embed hanya nama posisi, dan urutan memakai kemiripan saja
+    (``ROLE_CONFIG.semantic_weight = 1``): dengan teks profil atau bobot skill 40%, lowongan
+    yang mirip posisi lama di CV ikut naik, padahal yang ditanyakan posisi baru. Skill cocok
+    dan kurang tetap dihitung terhadap ``skills`` CV, jadi ``compute_skill_gap`` atas hasilnya
+    memberi skill yang diminta posisi itu tetapi belum ada di CV.
+
+    Returns:
+        ``MatchResult``. Tidak pernah melempar exception; kegagalan di ``error``.
+    """
+    text = " ".join(role.split())
+    if not text:
+        return MatchResult(error="Posisi kosong")
+    return _match_text(
+        text,
+        skills,
+        embeddings=embeddings,
+        vector_store=vector_store,
+        db_path=db_path,
+        config=ROLE_CONFIG,
+    )
+
+
+def _match_text(
+    text: str,
+    skills: list[str],
+    *,
+    embeddings: Embeddings,
+    vector_store: Any,
+    db_path: str | Path,
+    config: MatchConfig,
+) -> MatchResult:
+    """Embed ``text`` sekali lalu urutkan lowongan dengan ``rank_jobs``; error tidak dilempar."""
     try:
         vector = embeddings.embed_query(text)
     except Exception as exc:  # noqa: BLE001 - tipe error provider embedding beragam
@@ -325,7 +380,7 @@ def match_jobs(
     try:
         matches, chunks_found, unique_jobs = rank_jobs(
             vector,
-            build_cv_skills(profile.skills),
+            build_cv_skills(skills),
             vector_store=vector_store,
             db_path=db_path,
             config=config,

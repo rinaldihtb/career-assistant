@@ -11,6 +11,7 @@ import pytest
 from conftest import ScriptedLLM, agent_script, plan_reply, tool_call
 
 from src.agents.prompts import (
+    CV_ROLE_FAILED_MESSAGE,
     SUPERVISOR_CHAT_CV_NOTE,
     SUPERVISOR_CHAT_SYSTEM,
     SUPERVISOR_CLARIFY_MESSAGE,
@@ -35,8 +36,10 @@ from src.agents.supervisor_agent_graph import (
     check_citations,
     core_role,
     format_profile,
+    is_new_role,
     planner_messages,
     replace_self_references,
+    role_from_question,
     target_roles,
 )
 from src.cv.match import JobMatch, MatchResult
@@ -521,3 +524,160 @@ def test_cv_match_stays_without_city_or_self_reference(make_repository, question
 def test_replace_self_references(question, expected):
     assert replace_self_references(question, "HR") == expected
     assert replace_self_references(question, "") == question
+
+
+# --- cv_role dan penjaga cv_match ------------------------------------------------
+
+
+def test_cv_role_matches_again_for_the_named_role(make_repository, monkeypatch):
+    calls = []
+
+    def fake_match_role(self, role, profile):
+        calls.append((role, profile))
+        return MatchResult(matches=MATCHES.matches, embedding_calls=1)
+
+    monkeypatch.setattr(SupervisorAgent, "match_role", fake_match_role)
+    llm = ScriptedLLM(
+        reply=agent_script(plan=plan_reply(("cv_role", "Product Manager"), schema="CVPlan"))
+    )
+    state = _invoke(llm, make_repository(), "Mau jadi product manager, perlu apa?", **CV)
+
+    assert calls == [("Product Manager", PROFILE)]
+    result = state["result"]
+    assert result.source == "cv"
+    assert result.answer.startswith("Untuk posisi Product Manager")
+    assert result.job_ids == [match.job_id for match in MATCHES.matches][:5]
+
+
+def test_cv_role_without_embedding_model_says_search_failed(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(("cv_role", "Pilot"), schema="CVPlan")))
+    state = _invoke(llm, make_repository(), "Mau jadi pilot", **CV)
+
+    assert state["result"].answer == CV_ROLE_FAILED_MESSAGE.format(role="Pilot")
+
+
+@pytest.mark.parametrize(
+    ("question", "agents"),
+    [
+        ("Carikan saya lowongan akuntan", ["rag"]),
+        ("Lowongan yang cocok buatku dan lowongan akuntan", ["cv_match", "rag"]),
+    ],
+)
+def test_cv_match_next_to_rag_needs_match_request(make_repository, question, agents):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("cv_match", "Lowongan yang paling cocok dengan CV-ku"),
+                ("rag", "Lowongan akuntan"),
+                schema="CVPlan",
+            ),
+            answers={"Lowongan akuntan": "Tidak ada."},
+        )
+    )
+    state = _invoke(llm, make_repository(CHUNKS), question, **CV)
+
+    assert [task["agent"] for task in state["subtasks"]] == agents
+
+
+@pytest.mark.parametrize(
+    ("question", "role"),
+    [
+        ("Skill yang perlu kupelajari untuk menjadi Product Manager", "Product Manager"),
+        ("Aku mau pindah karier ke bidang keuangan.", "keuangan"),
+        ("Project Manager", "Project Manager"),
+        ("Skill untuk beralih karir ke bidang lain.", "lain"),
+    ],
+)
+def test_role_from_question(question, role):
+    assert role_from_question(question) == role
+
+
+@pytest.mark.parametrize(
+    ("role", "new"),
+    [("Product Manager", True), ("Data Analyst", False), ("bidang lain", False), ("lain", False)],
+)
+def test_is_new_role_rejects_generic_and_own_role(role, new):
+    assert is_new_role(role, PROFILE) is new  # PROFILE: Senior Data Analyst
+
+
+@pytest.mark.parametrize(
+    ("extra", "kept"),
+    [
+        (("cv_gap", "Skill yang perlu kupelajari dari CV-ku"), []),
+        (("rag", "Lowongan Product Manager yang cocok untukku"), []),
+        (("rag", "Lowongan Product Manager di Jakarta"), ["rag"]),
+        (("sql", "Berapa rata-rata gaji Product Manager?"), ["sql"]),
+    ],
+)
+def test_cv_role_drops_repeating_subtasks(make_repository, monkeypatch, extra, kept):
+    monkeypatch.setattr(SupervisorAgent, "match_role", lambda self, role, profile: MATCHES)
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("cv_role", "Skill yang perlu kupelajari untuk menjadi Product Manager"),
+                extra,
+                schema="CVPlan",
+            ),
+            sql={extra[1]: COUNT_SQL},
+            answers={extra[1]: "Tidak ada."},
+        )
+    )
+    state = _invoke(llm, make_repository(CHUNKS), "Mau jadi product manager", **CV)
+
+    assert state["subtasks"][0] == {"agent": "cv_role", "question": "Product Manager"}
+    assert [task["agent"] for task in state["subtasks"][1:]] == kept
+
+
+def test_cv_role_for_own_role_becomes_out_of_scope(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("cv_role", "Skill yang perlu kupelajari untuk menjadi Data Analyst"),
+                schema="CVPlan",
+            ),
+            chat="Mau pindah ke bidang apa?",
+        )
+    )
+    state = _invoke(llm, make_repository(), "bagaimana cara switch karir", **CV)
+
+    assert state["response"] == "out_of_scope"
+    assert state["subtasks"] == []
+    assert state["result"].answer == "Mau pindah ke bidang apa?"
+
+
+@pytest.mark.parametrize(
+    ("second", "agents"),
+    [
+        (("rag", "Lowongan Data Analyst di Jakarta"), ["rag"]),
+        (("rag", "Lowongan barista di Jakarta"), ["cv_match", "rag"]),
+        (("sql", "Berapa jumlah lowongan Data Analyst di Jakarta?"), ["cv_match", "sql"]),
+    ],
+)
+def test_cv_match_dropped_next_to_personal_rag_with_city(make_repository, second, agents):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("cv_match", "Lowongan yang paling cocok dengan CV-ku"), second, schema="CVPlan"
+            ),
+            sql={second[1]: COUNT_SQL},
+            answers={second[1]: "Tidak ada."},
+        )
+    )
+    state = _invoke(llm, make_repository(CHUNKS), "Lowongan yang sesuai CV-ku di Jakarta", **CV)
+
+    assert [task["agent"] for task in state["subtasks"]] == agents
+
+
+def test_career_switch_without_role_becomes_out_of_scope(make_repository):
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("cv_match", "Lowongan yang paling cocok dengan CV-ku"), schema="CVPlan"
+            ),
+            chat="Mau pindah ke bidang apa?",
+        )
+    )
+    state = _invoke(llm, make_repository(), "bagaimana cara saya untuk switch karir", **CV)
+
+    assert state["response"] == "out_of_scope"
+    assert state["result"].answer == "Mau pindah ke bidang apa?"

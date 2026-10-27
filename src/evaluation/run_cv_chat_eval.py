@@ -151,8 +151,8 @@ def cv_checks(
     case: Mapping[str, Any], run: Mapping[str, Any], expected: Mapping[str, list[Any]]
 ) -> list[CheckResult]:
     """Pemeriksaan khusus set ini: respons, isi jawaban agent CV, dan sitasi."""
-    want = case["expected"].get("response", "answer")
-    same = run["response"] == want
+    want = [case["expected"].get("response", "answer"), *case["expected"].get("response_alt", [])]
+    same = run["response"] in want
     results = [CheckResult("response", same, "" if same else f"dapat {run['response']}")]
     if "cv_match" in run["agents"]:
         ok = run["cv_ids"] == expected["ids"]

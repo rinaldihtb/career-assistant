@@ -8,6 +8,9 @@ Dua jenis sub-tugas dari planner (``SubTask.agent``):
   menyimpan ID-nya.
 - ``cv_gap``: hasil ``compute_skill_gap`` atas lowongan yang sama, jadi angkanya sama persis
   dengan halaman Skill Gap.
+- ``cv_role``: skill gap dan lowongan teratas untuk posisi lain yang disebut pengguna. Hasil
+  pencocokannya (``match_role``, 1 embedding) dihitung supervisor dan diteruskan lewat
+  ``matches``; jawabannya tetap template.
 
 Jawaban disusun dari template, bukan LLM: data sudah dihitung saat CV dicocokkan, dan teks
 pertanyaan tidak mengubah hasil. Profil hanya dipakai untuk label posisi dan pengalaman.
@@ -26,6 +29,15 @@ from src.agents.prompts import (
     CV_MATCH_LINE,
     CV_MATCH_SKILLS,
     CV_NO_MATCHES_MESSAGE,
+    CV_ROLE_EMPTY_MESSAGE,
+    CV_ROLE_FAILED_MESSAGE,
+    CV_ROLE_GAP_INTRO,
+    CV_ROLE_GAP_NONE,
+    CV_ROLE_HAVE,
+    CV_ROLE_JOBS,
+    CV_ROLE_LINE,
+    CV_ROLE_NO_SKILLS,
+    CV_ROLE_SKILLS,
     CV_SOURCE,
     CV_SOURCE_WITH_LABEL,
 )
@@ -34,7 +46,7 @@ from src.cv.match import JobMatch, MatchConfig, MatchResult
 from src.cv.profile import CVProfile
 from src.models.agent import AgentResult
 
-CVKind = Literal["cv_match", "cv_gap"]
+CVKind = Literal["cv_match", "cv_gap", "cv_role"]
 
 # Halaman Cocokkan CV menampilkan 10 lowongan; di chat 5 cukup sebagai ringkasan, dan
 # kartu lowongan di chat lebih tinggi daripada baris teks.
@@ -49,23 +61,29 @@ def run_cv_agent(
     kind: CVKind,
     profile: CVProfile | None,
     matches: MatchResult | None,
+    role: str = "",
 ) -> AgentResult:
     """Jawab satu sub-tugas CV dari hasil pencocokan yang sudah ada.
 
-    Teks pertanyaan dari planner tidak dibutuhkan: hasilnya sama untuk setiap kalimat
-    yang meminta jenis jawaban yang sama.
+    Untuk ``cv_match`` dan ``cv_gap`` teks pertanyaan dari planner tidak dibutuhkan: hasilnya
+    sama untuk setiap kalimat yang meminta jenis jawaban yang sama.
 
     Args:
-        kind: ``cv_match`` (lowongan teratas) atau ``cv_gap`` (skill kurang).
+        kind: ``cv_match`` (lowongan teratas), ``cv_gap`` (skill kurang), atau ``cv_role``
+            (skill kurang dan lowongan teratas untuk posisi lain).
         profile: Profil CV aktif, untuk label posisi dan pengalaman.
-        matches: Hasil ``match_jobs`` yang tersimpan di sesi.
+        matches: Hasil ``match_jobs`` yang tersimpan di sesi; untuk ``cv_role``, hasil
+            ``match_role`` posisi itu.
+        role: Nama posisi lain (khusus ``cv_role``).
 
     Returns:
         ``AgentResult`` dengan ``source="cv"`` dan ``usage`` kosong. ``job_ids`` berisi
-        lowongan yang ditampilkan (khusus ``cv_match``). Tanpa hasil pencocokan, jawaban
-        berupa ajakan membuka Cocokkan CV. Tidak pernah melempar exception.
+        lowongan yang ditampilkan (``cv_match`` dan ``cv_role``). Tanpa hasil pencocokan,
+        jawaban berupa ajakan membuka Cocokkan CV. Tidak pernah melempar exception.
     """
     try:
+        if kind == "cv_role":
+            return role_answer(_one_line(role), matches)
         if matches is None or matches.error or not matches.matches:
             return AgentResult(answer=CV_NO_MATCHES_MESSAGE, source="cv")
         if kind == "cv_gap":
@@ -128,6 +146,54 @@ def gap_answer(matches: list[JobMatch]) -> str:
     if gap.missing:
         parts.append(CV_GAP_PLAN)
     return "\n\n".join(parts)
+
+
+def role_answer(role: str, matches: MatchResult | None) -> AgentResult:
+    """Jawaban ``cv_role``: skill gap posisi itu, skill CV yang terpakai, lalu lowongan teratas.
+
+    ``error`` diisi jika pencarian gagal; pesan error asli tidak masuk ke ``answer``.
+    """
+    if matches is None or matches.error:
+        error = matches.error if matches is not None else "Hasil pencocokan posisi kosong"
+        return AgentResult(
+            answer=CV_ROLE_FAILED_MESSAGE.format(role=role), source="cv", error=error
+        )
+    if not matches.matches:
+        return AgentResult(answer=CV_ROLE_EMPTY_MESSAGE.format(role=role), source="cv")
+    gap = compute_skill_gap(matches.matches, limit=CV_GAP_LIMIT)
+    if gap.missing:
+        lines = [CV_ROLE_GAP_INTRO.format(role=role, jobs=gap.jobs)]
+        lines += [
+            CV_GAP_LINE.format(name=skill.name, count=skill.jobs, jobs=gap.jobs)
+            for skill in gap.missing
+        ]
+        parts = ["\n".join(lines)]
+    else:
+        parts = [CV_ROLE_GAP_NONE.format(role=role, jobs=gap.jobs)]
+    if gap.have:
+        have = ", ".join(
+            f"{skill.name} ({skill.jobs} dari {gap.jobs})" for skill in gap.have[:CV_HAVE_LIMIT]
+        )
+        parts.append(CV_ROLE_HAVE.format(skills=have))
+    shown = matches.matches[:CV_MATCH_LIMIT]
+    jobs = [CV_ROLE_JOBS.format(count=len(shown), role=role)]
+    for match in shown:
+        skills = match.matched_skills[:MAX_MATCHED_SKILLS]
+        jobs.append(
+            CV_ROLE_LINE.format(
+                id=match.job_id,
+                title=_one_line(match.job_title),
+                company=_one_line(match.company_name),
+                location=_one_line(match.location),
+                skills=CV_ROLE_SKILLS.format(skills=", ".join(skills))
+                if skills
+                else CV_ROLE_NO_SKILLS,
+            )
+        )
+    parts.append("\n".join(jobs))
+    return AgentResult(
+        answer="\n\n".join(parts), source="cv", job_ids=[match.job_id for match in shown]
+    )
 
 
 def profile_label(profile: CVProfile | None) -> str:

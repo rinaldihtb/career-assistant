@@ -2,12 +2,13 @@
 
 Input graph: ``messages`` (riwayat lalu pertanyaan terakhir), serta ``profile`` dan
 ``matches`` jika CV pengguna aktif. Tanpa CV, prompt dan skema planner sama dengan versi
-tanpa fitur CV. Dengan CV, planner memakai ``CVPlan`` (worker tambahan ``cv_match`` dan
-``cv_gap``) dan menerima profil ringkas dari ``format_profile``; nama, kontak, lokasi,
-riwayat kerja, dan teks CV tidak dikirim ke LLM.
+tanpa fitur CV. Dengan CV, planner memakai ``CVPlan`` (worker tambahan ``cv_match``,
+``cv_gap``, dan ``cv_role``) dan menerima profil ringkas dari ``format_profile``; nama, kontak,
+lokasi, riwayat kerja, dan teks CV tidak dikirim ke LLM.
 """
 
 import operator
+import os
 import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, TypedDict, cast
@@ -42,14 +43,14 @@ from src.agents.prompts import (
 )
 from src.agents.rag_agent import RagAgent, RetrievalResult
 from src.agents.sql_agent import SQLQueryResult, finalize_answer
-from src.cv.match import MatchResult
+from src.cv.match import MatchResult, match_role
 from src.cv.profile import CVProfile
 from src.models.agent import AgentResult, LLMUsage
 from src.repositories.job_repository import JobRepository
 
 MAX_SUBTASKS = 3
 AgentName = Literal["sql", "rag"]
-CVAgentName = Literal["sql", "rag", "cv_match", "cv_gap"]
+CVAgentName = Literal["sql", "rag", "cv_match", "cv_gap", "cv_role"]
 Response = Literal["answer", "clarify", "refuse", "out_of_scope", "unsupported"]
 # Respons planner saat CV aktif: tanpa "clarify", karena profil sudah memberi konteks. Dengan
 # "clarify" tersedia, aturan clarify prompt tanpa CV membuat sapaan (C5-03) dan "Ada info
@@ -59,7 +60,13 @@ _CITATION = re.compile(r"\[ID:\s*(\d+)\]", re.IGNORECASE)
 _UNSAFE_CHAT = re.compile(r"\[ID:|Rp\s?\d", re.IGNORECASE)
 MAX_HISTORY_MESSAGES = 10
 MAX_HISTORY_CHARS = 600
-AGENT_NODES = {"sql": "sql_agent", "rag": "rag_agent", "cv_match": "cv_agent", "cv_gap": "cv_agent"}
+AGENT_NODES = {
+    "sql": "sql_agent",
+    "rag": "rag_agent",
+    "cv_match": "cv_agent",
+    "cv_gap": "cv_agent",
+    "cv_role": "cv_agent",
+}
 # CV fiktif dengan skill terbanyak di set eval punya 15 skill; profil ringkas tetap < 150 token.
 MAX_PROFILE_SKILLS = 15
 # Tingkat jabatan yang dibuang dari posisi tujuan. Senioritas selalu dibuang; tingkat lain
@@ -83,6 +90,24 @@ _SELF_REFERENCE = re.compile(
     re.IGNORECASE,
 )
 _PREPOSITION_REF = re.compile(r"(?:untuk|buat|bagi)", re.IGNORECASE)
+# Kata yang meminta hasil Cocokkan CV. Tanpa kata ini, cv_match di samping rag/sql adalah
+# tambahan yang tidak diminta ("carikan saya lowongan akuntan" -> rag + cv_match).
+_MATCH_REQUEST = re.compile(r"\b(?:cocok|pas|sesuai|rekomendasi\w*)\b", re.IGNORECASE)
+# Teks setelah "menjadi", "ke bidang", dan sejenisnya adalah posisi tujuan. Planner menulis kalimat
+# utuh sebagai pertanyaan cv_role walau diminta nama posisi (C10-02, C10-03, C13-01).
+_ROLE_TARGET = re.compile(
+    r"\b(?:menjadi|jadi|sebagai|ke\s+bidang|ke\s+posisi|beralih\s+ke|pindah\s+ke)\s+(?P<role>.+)$",
+    re.IGNORECASE,
+)
+# Pindah karier tanpa posisi tujuan; planner menjawabnya cv_match di C13-01 (1 dari 4 run).
+_CAREER_SWITCH = re.compile(
+    r"\b(?:switch|pindah|ganti|beralih|banting\s+setir)\b.*\b(?:karir|karier|profesi|bidang)\b",
+    re.IGNORECASE,
+)
+# Isi cv_role yang bukan nama posisi, misalnya "bidang lain" untuk "cara switch karir" (C13-01).
+_GENERIC_ROLE_WORDS = frozenset(
+    {"lain", "baru", "bidang", "posisi", "karier", "karir", "profesi", "kerja", "pekerjaan"}
+)
 
 
 class SubTask(BaseModel):
@@ -305,6 +330,31 @@ def profile_role(profile: CVProfile) -> str:
     return " atau ".join(target_roles(profile.target_role) or profile.skills[:2])
 
 
+def role_from_question(question: str) -> str:
+    """Nama posisi dari pertanyaan sub-tugas ``cv_role``.
+
+    "Skill yang perlu kupelajari untuk menjadi Product Manager" -> "Product Manager"; teks tanpa
+    penanda posisi dipakai utuh. Spasi dirapikan dan tanda baca di ujung dibuang.
+    """
+    text = " ".join(question.split())
+    match = _ROLE_TARGET.search(text)
+    return (match.group("role") if match else text).strip(" .,;:!?")
+
+
+def is_new_role(role: str, profile: CVProfile) -> bool:
+    """``True`` jika ``role`` posisi yang bisa dicari dan berbeda dari posisi tujuan di CV.
+
+    Posisi yang hanya berisi kata umum ("bidang lain") atau sama dengan posisi tujuan profil
+    (tanpa tingkat jabatan) bukan permintaan posisi lain: C13-01 "cara switch karir" diberi
+    ``cv_role`` "Data Analyst" untuk CV Data Analyst di 3 dari 4 run.
+    """
+    words = role.lower().split()
+    if all(word in _GENERIC_ROLE_WORDS for word in words):
+        return False
+    own = {own_role.lower() for own_role in target_roles(profile.target_role)}
+    return core_role(role).lower() not in own
+
+
 def replace_self_references(question: str, role: str) -> str:
     """Ganti frasa yang merujuk pengguna ("CV-ku", "untukku", "posisi yang kutuju") dengan ``role``.
 
@@ -374,10 +424,12 @@ class SupervisorAgent:
             for task in parsed_plan.subtasks
             if task.question.strip()
         ]
-        response: Response = (
-            parsed_plan.response if subtasks or parsed_plan.response != "answer" else "clarify"
-        )
         subtasks = self.align_subtasks(question, subtasks, profile)
+        response: Response = parsed_plan.response
+        if response == "answer" and not subtasks:
+            # Tanpa CV planner bisa meminta klarifikasi; dengan CV, skema tanpa "clarify" dan
+            # sub-tugas yang habis dibuang penjaga dibalas lewat out_of_scope (C13-01).
+            response = "clarify" if profile is None else "out_of_scope"
         overflow = [task["question"] for task in subtasks[MAX_SUBTASKS:]]
         return {
             "response": response,
@@ -398,6 +450,14 @@ class SupervisorAgent:
           ``cv_match`` diganti ``rag`` dengan pertanyaan pengguna yang rujukan dirinya diganti
           posisi tujuan, sehingga kota dan pengecualian kota tetap utuh. Jika lokasi tidak bisa
           dibaca dari database, rute planner dipakai apa adanya.
+        - ``cv_match`` di samping ``rag``/``sql`` dibuang jika pertanyaan tidak memuat kata
+          permintaan cocok (``_MATCH_REQUEST``): "carikan saya lowongan akuntan" dijawab daftar
+          akuntan ditambah lowongan posisi CV yang tidak diminta (C11-01).
+        - ``cv_match`` di samping ``rag`` yang sudah memuat posisi tujuan profil dan lokasi dibuang:
+          ``rag`` itu sudah jawaban personal dengan kota (C3-03, 3 dari 3 run).
+        - Sub-tugas ``cv_role`` dirapikan oleh ``align_role_subtasks``. Pertanyaan pindah karier
+          tanpa ``cv_role`` yang hanya dijawab ``cv_match``/``cv_gap`` dikosongkan, sehingga
+          planner membalas lewat out_of_scope yang menanyakan bidang tujuan (C13-01).
         """
         aligned = [
             {**task, "agent": "sql"}
@@ -405,7 +465,26 @@ class SupervisorAgent:
             else task
             for task in subtasks
         ]
+        if profile is not None:
+            aligned = self.align_role_subtasks(aligned, profile)
         agents = {task["agent"] for task in aligned}
+        if "cv_match" in agents and agents & {"sql", "rag"} and not _MATCH_REQUEST.search(question):
+            aligned = [task for task in aligned if task["agent"] != "cv_match"]
+            agents.discard("cv_match")
+        if (
+            profile is not None
+            and {"cv_match", "rag"} <= agents
+            and self._has_personal_rag(aligned, profile)
+        ):
+            aligned = [task for task in aligned if task["agent"] != "cv_match"]
+            agents.discard("cv_match")
+        if (
+            profile is not None
+            and agents
+            and agents <= {"cv_match", "cv_gap"}
+            and _CAREER_SWITCH.search(question)
+        ):
+            return []
         if profile is None or "cv_match" not in agents or agents & {"sql", "rag"}:
             return aligned
         if not _SELF_REFERENCE.search(question):
@@ -418,6 +497,58 @@ class SupervisorAgent:
             return aligned
         rag = {"agent": "rag", "question": replace_self_references(question, profile_role(profile))}
         return [rag if task["agent"] == "cv_match" else task for task in aligned]
+
+    def align_role_subtasks(
+        self, subtasks: list[dict[str, str]], profile: CVProfile
+    ) -> list[dict[str, str]]:
+        """Rapikan sub-tugas ``cv_role`` dan buang sub-tugas yang mengulang isinya, tanpa LLM.
+
+        - Pertanyaan ``cv_role`` diganti nama posisinya (``role_from_question``); ``cv_role``
+          yang bukan posisi baru (``is_new_role``) dibuang.
+        - Jika ada ``cv_role``, ``cv_match`` dan ``cv_gap`` dibuang karena dihitung untuk posisi
+          lama di CV, dan ``rag`` yang menyebut posisi yang sama tanpa kota dibuang karena
+          lowongan teratasnya sudah ada di jawaban ``cv_role``. Planner menambah keduanya
+          di C10-02, C10-03, dan C10-04 pada 11 dari 11 run.
+        """
+        roles: list[str] = []
+        kept: list[dict[str, str]] = []
+        for task in subtasks:
+            if task["agent"] != "cv_role":
+                kept.append(task)
+                continue
+            role = role_from_question(task["question"])
+            if role and is_new_role(role, profile):
+                roles.append(role.lower())
+                kept.append({**task, "question": role})
+        if not roles:
+            return kept
+        return [
+            task
+            for task in kept
+            if task["agent"] not in ("cv_match", "cv_gap")
+            and not (
+                task["agent"] == "rag"
+                and any(role in task["question"].lower() for role in roles)
+                and not self._mentions_place(task["question"])
+            )
+        ]
+
+    def _has_personal_rag(self, subtasks: list[dict[str, str]], profile: CVProfile) -> bool:
+        """``True`` jika ada sub-tugas ``rag`` yang memuat posisi tujuan profil dan lokasi."""
+        roles = [role.lower() for role in target_roles(profile.target_role)]
+        return any(
+            task["agent"] == "rag"
+            and any(role in task["question"].lower() for role in roles)
+            and self._mentions_place(task["question"], default=False)
+            for task in subtasks
+        )
+
+    def _mentions_place(self, question: str, *, default: bool = True) -> bool:
+        """``True`` jika pertanyaan menyebut lokasi dari database; ``default`` jika gagal dibaca."""
+        try:
+            return bool(RagAgent(self.llm, self.job_repository).find_places(question))
+        except Exception:  # noqa: BLE001 - lokasi opsional; pemanggil memilih nilai aman
+            return default
 
     def dispatch(self, state: SupervisorState) -> list[Send] | str:
         """Kirim setiap sub-tugas ke worker yang sesuai, atau langsung merespons."""
@@ -517,13 +648,42 @@ class SupervisorAgent:
         return {"collected": [(index, sql_result)]}
 
     def run_cv_agent(self, state: SupervisorState) -> dict[str, list[tuple[int, AgentResult]]]:
-        """Jalankan worker CV (``cv_match`` atau ``cv_gap``) untuk satu sub-tugas, tanpa LLM."""
+        """Jalankan worker CV untuk satu sub-tugas, tanpa LLM.
+
+        ``cv_match``/``cv_gap`` memakai hasil Cocokkan CV di state; ``cv_role`` mencocokkan
+        ulang untuk posisi di pertanyaan sub-tugas (``match_role``, 1 embedding).
+        """
         index = state.get("worker_index")
         kind = state.get("worker_agent")
-        if index is None or kind not in ("cv_match", "cv_gap"):
+        if index is None or kind not in ("cv_match", "cv_gap", "cv_role"):
             return {"collected": []}
-        result = run_cv_agent(kind=kind, profile=state.get("profile"), matches=state.get("matches"))
+        profile = state.get("profile")
+        if kind == "cv_role":
+            role = state.get("worker_question", "")
+            result = run_cv_agent(
+                kind=kind, profile=profile, matches=self.match_role(role, profile), role=role
+            )
+        else:
+            result = run_cv_agent(kind=kind, profile=profile, matches=state.get("matches"))
         return {"collected": [(index, result)]}
+
+    def match_role(self, role: str, profile: CVProfile | None) -> MatchResult:
+        """Hasil pencocokan untuk posisi lain, dengan embedding milik vector store repository.
+
+        Skill CV dari ``profile`` dipakai untuk skill cocok dan kurang. SQLite dibaca dari
+        ``DB_SQLITE_PATH``, sama dengan halaman Cocokkan CV. Tidak pernah melempar exception.
+        """
+        store = self.job_repository.vector_db
+        embeddings = getattr(store, "embeddings", None)
+        if embeddings is None:
+            return MatchResult(error="Vector store tidak punya model embedding")
+        return match_role(
+            role,
+            profile.skills if profile is not None else [],
+            embeddings=embeddings,
+            vector_store=store,
+            db_path=os.getenv("DB_SQLITE_PATH", "./data/database.sqlite"),
+        )
 
     def synthesize(self, state: SupervisorState) -> dict[str, AgentResult | list[AgentResult]]:
         """Gabungkan jawaban worker sesuai urutan pertanyaan."""

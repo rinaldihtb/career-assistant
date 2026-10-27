@@ -11,6 +11,7 @@ from src.cv.match import (
     aggregate_job_scores,
     combine_score,
     match_jobs,
+    match_role,
     profile_query_text,
     scale_semantic,
     skill_score,
@@ -282,3 +283,33 @@ def test_match_jobs_vector_store_error_is_reported(jobs_db):
     )
     assert result.error == "Pencarian error: qdrant down"
     assert result.embedding_calls == 1
+
+
+# --- Posisi lain (cv_role) ------------------------------------------------------
+
+
+def test_match_role_embeds_only_role_and_ranks_by_similarity(jobs_db):
+    embeddings = FakeEmbeddings()
+    result = match_role(
+        "  Product\nManager ",
+        ["Python", "SQL"],
+        embeddings=embeddings,
+        vector_store=VectorStoreByVector(CHUNKS),
+        db_path=jobs_db,
+    )
+
+    assert result.error is None and result.embedding_calls == 1
+    assert embeddings.texts == ["Product Manager"]
+    assert [m.job_id for m in result.matches] == [5, 1, 3]  # urut kemiripan, bukan skor skill
+    assert result.matches[0].score == pytest.approx(result.matches[0].semantic_scaled)
+    assert result.matches[0].missing_skills == ["REST API"]  # dihitung terhadap skill CV
+    assert result.matches[1].matched_skills == ["Python", "SQL"]
+
+
+def test_match_role_empty_role_makes_no_embedding_call(jobs_db):
+    embeddings = FakeEmbeddings()
+    store = VectorStoreByVector(CHUNKS)
+    result = match_role(" ", ["SQL"], embeddings=embeddings, vector_store=store, db_path=jobs_db)
+
+    assert result.error == "Posisi kosong"
+    assert embeddings.texts == []
