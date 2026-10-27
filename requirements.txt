@@ -1,4 +1,7 @@
 streamlit>=1.59,<2.0
+fastapi
+uvicorn[standard]
+requests
 langchain
 pandas
 langchain_text_splitters

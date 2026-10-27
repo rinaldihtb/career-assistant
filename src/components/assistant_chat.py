@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import requests
 import streamlit as st
 
 from src.components.job_description import description_to_markdown, escape_markdown
@@ -104,10 +105,8 @@ def render_assistant_page() -> None:
 def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     """Kirim pertanyaan ke supervisor, tampilkan jawaban, lalu simpan ke riwayat.
 
-    Graph menerima riwayat lalu pertanyaan baru sebagai ``messages``; ``history``
-    diambil sebelum pertanyaan ditambahkan agar pertanyaan tidak terkirim dua kali.
-    ``AgentResult`` dan durasi ikut disimpan agar kartu dan detail LLM tetap tampil
-    saat rerun.
+    FastAPI menerima ``history`` dan ``user_message``. ``AgentResult`` dibuat dari
+    respons itu agar tampilan chat yang ada tetap digunakan.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
     user_message = {"role": "user", "content": question}
@@ -117,13 +116,23 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     with st.chat_message("assistant"):
         with st.spinner("Mencari jawaban..."):
             start = time.perf_counter()
-            state = get_supervisor_agent().graph.invoke({"messages": [*history, user_message]})
-            result: AgentResult = state["result"]
+            try:
+                response = requests.post(
+                    "http://fastapi:8000/chat-assistant",
+                    json={"history": history, "user_message": user_message},
+                    timeout=(5, 90),
+                )
+                response.raise_for_status()
+                result = AgentResult(answer=response.json()["answer"], source="general")
+            except (requests.RequestException, KeyError, TypeError, ValueError):
+                logger.exception("Gagal memanggil Chat Assistant API")
+                st.error("Asisten belum bisa dihubungi. Silakan coba lagi.")
+                return
             seconds = time.perf_counter() - start
             display = prepare_display(result)
         _render_result(result, display, seconds)
     if result.error:
-        logger.warning("Agent %s error: %s", result.source, result.error)
+        logger.warning("Agent %s error: %s", resultZsource, result.error)
     messages.append(
         {
             "role": "assistant",
