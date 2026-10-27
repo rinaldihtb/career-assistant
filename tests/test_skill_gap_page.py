@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
+from test_assistant_page import _use
 
 from src.components import skill_gap
 from src.components.cv_match import CVDependencies
 from src.components.skill_gap import (
+    ASSISTANT_QUESTION,
     DEPENDENCY_ERROR,
     NO_CV,
     NO_GAP,
@@ -31,7 +33,7 @@ from src.cv.ingest import CV_STATE_KEY
 from src.cv.match import JobMatch, MatchResult
 from src.cv.plan import LearningPlan, LearningPlanResult, PlanWeek
 from src.cv.profile import CVProfile
-from src.models.agent import LLMUsage
+from src.models.agent import AgentResult, LLMUsage
 
 APP_PATH = Path(__file__).resolve().parents[1] / "src" / "app.py"
 # Run pertama di satu proses pytest memuat pandas/pyarrow: lebih dari 10 detik di laptop macOS.
@@ -236,6 +238,21 @@ def test_page_is_registered_in_app(plans):
     assert app.info[0].value == NO_CV
     links = [element.proto.label for element in app.sidebar.get("page_link")]
     assert links == ["Beranda", "Cari Lowongan", "Cocokkan CV", "Skill Gap", "Asisten Karier"]
+
+
+def test_ask_assistant_opens_assistant_with_gap_question(plans, monkeypatch):
+    graph = _use(monkeypatch, AgentResult(answer="Power BI: 2 dari 2 lowongan", source="cv"))
+    app = AppTest.from_file(str(APP_PATH), default_timeout=APP_TIMEOUT)
+    app.session_state[CV_STATE_KEY] = state()
+    app.run()
+    app.switch_page("pages/skillgap_page.py").run()
+    app.button(key="gap_to_assistant").click().run()
+
+    assert not app.exception
+    assert app.markdown[0].value == "## Asisten Karier"
+    assert graph.inputs[0]["messages"] == [{"role": "user", "content": ASSISTANT_QUESTION}]
+    assert graph.inputs[0]["matches"] == MATCHES
+    assert plans["calls"] == []
 
 
 # --- Helper tanpa Streamlit --------------------------------------------------------

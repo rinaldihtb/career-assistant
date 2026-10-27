@@ -16,12 +16,21 @@ from streamlit.testing.v1 import AppTest
 from src.components import assistant_chat
 from src.components.assistant_chat import (
     API_ERROR,
+    CV_EXAMPLE_QUESTIONS,
+    CV_PROFILE_FIELDS,
     DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
+    NO_CV_BANNER,
+    PENDING_KEY,
+    cv_banner,
+    cv_payload,
     prepare_display,
     split_rag_answer,
 )
+from src.cv.ingest import CV_STATE_KEY
+from src.cv.match import JobMatch, MatchResult
+from src.cv.profile import Achievement, CVProfile, Experience
 from src.models.agent import AgentResult, LLMCall, LLMUsage
 from src.routes import routes
 
@@ -125,17 +134,24 @@ def calls(monkeypatch):
     return _use(monkeypatch, RAG_RESULT, SQL_RESULT).inputs
 
 
-def _app() -> AppTest:
+def _app(cv_state: dict | None = None) -> AppTest:
     app = AppTest.from_function(_page, default_timeout=APP_TIMEOUT)
+    if cv_state is not None:
+        app.session_state[CV_STATE_KEY] = cv_state
     app.run()
     return app
+
+
+def _button(app: AppTest, label: str):
+    return next(button for button in app.button if button.label == label)
 
 
 def test_empty_chat_shows_example_questions(calls):
     app = _app()
 
     assert not app.exception
-    assert [button.label for button in app.button] == list(EXAMPLE_QUESTIONS)
+    assert app.info[0].value == NO_CV_BANNER
+    assert [button.label for button in app.button] == ["Upload CV", *EXAMPLE_QUESTIONS]
     assert len(app.chat_message) == 0
     assert calls == []
 
@@ -156,7 +172,9 @@ def test_rag_answer_shows_uniform_card_with_reason(calls):
         "Gaji: Rp8.000.000 - Rp10.000.000 per bulan | ID 14"
     ) in [caption.value for caption in app.caption]
     assert calls[0] == {
-        "messages": [{"role": "user", "content": "Lowongan data analyst di Jakarta"}]
+        "messages": [{"role": "user", "content": "Lowongan data analyst di Jakarta"}],
+        "profile": None,
+        "matches": None,
     }
 
 
@@ -222,7 +240,7 @@ def test_history_survives_rerun(calls):
 
 def test_example_button_asks_question(calls):
     app = _app()
-    app.button[0].click().run()
+    _button(app, EXAMPLE_QUESTIONS[0]).click().run()
 
     assert calls[0]["messages"][-1]["content"] == EXAMPLE_QUESTIONS[0]
     assert len(app.chat_message) == 2
@@ -231,7 +249,7 @@ def test_example_button_asks_question(calls):
 def test_new_conversation_clears_history(calls):
     app = _app()
     app.chat_input[0].set_value("Lowongan data analyst di Jakarta").run()
-    app.button[0].click().run()  # "Mulai percakapan baru"
+    _button(app, "Mulai percakapan baru").click().run()
 
     assert app.session_state[MESSAGES_KEY] == []
     assert len(app.chat_message) == 0
@@ -420,3 +438,133 @@ def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
     usage_panels = [e.label for e in app.expander if e.label.startswith("Detail:")]
     assert len(usage_panels) == 1
     assert usage_panels[0].startswith("Detail: Gabungan beberapa agent | 4 panggilan LLM")
+
+
+# --- CV aktif ------------------------------------------------------------------
+
+CV_PROFILE = CVProfile(
+    full_name="Rani Kusuma",
+    target_role="Data Analyst",
+    location="Pekanbaru",
+    education_level="S1",
+    education_major="Statistika",
+    skills=["SQL", "Excel"],
+    experience_months=20,
+    experiences=[Experience(title="Analis", company="PT Rahasia", start="2023-01", end="present")],
+    contacts=["rani@example.com", "+62 812 0000 1111"],
+    achievements=[Achievement(text="Menaikkan konversi 12%", context=None)],
+)
+CV_MATCHES = MatchResult(
+    matches=[
+        JobMatch(job_id=4, job_title="Marketing Manager", score=0.81, semantic=0.6,
+                 semantic_scaled=0.7, matched_skills=["SQL"], missing_skills=["Power BI"]),
+        JobMatch(job_id=1, job_title="Data Analyst", score=0.77, semantic=0.6,
+                 semantic_scaled=0.6, matched_skills=["Excel"], missing_skills=[]),
+    ],
+    embedding_calls=1,
+)  # fmt: skip
+CV_STATE = {
+    "profile": CV_PROFILE,
+    "version": 1,
+    "matches": CV_MATCHES,
+    "file_name": "cv_rani.pdf",
+    "file_size": 52_000,
+    "pages": 1,
+    "usage": LLMUsage(llm_calls=1, total_tokens=1200),
+    "embedding_calls": 1,
+}
+CV_RESULT = AgentResult(
+    answer=(
+        "Dari profilmu (Data Analyst · 1-3 tahun), ini 2 teratas dari 2 lowongan.\n"
+        "- [ID:4] Marketing Manager - PT Delta (Jakarta Raya): 81% cocok · skill cocok: SQL\n"
+        "- [ID:1] Data Analyst - PT Alpha (Jakarta): 77% cocok · skill cocok: Excel"
+    ),
+    source="cv",
+    job_ids=[4, 1],
+)
+
+
+def test_active_cv_shows_banner_and_cv_examples(calls):
+    app = _app(CV_STATE)
+
+    assert not app.exception
+    assert app.success[0].value == cv_banner(CV_STATE)
+    assert "Data Analyst · 1-3 tahun" in app.success[0].value
+    assert [button.label for button in app.button] == ["Koreksi profil", *CV_EXAMPLE_QUESTIONS]
+
+
+def test_question_with_cv_sends_profile_summary_and_matches(calls):
+    app = _app(CV_STATE)
+    app.chat_input[0].set_value("Lowongan yang cocok untukku").run()
+
+    assert not app.exception
+    profile, matches = calls[0]["profile"], calls[0]["matches"]
+    assert profile == CVProfile.model_validate(CV_PROFILE.model_dump(include=CV_PROFILE_FIELDS))
+    assert profile.full_name is None and profile.location is None
+    assert profile.contacts == [] and profile.experiences == [] and profile.achievements == []
+    assert matches == CV_MATCHES
+
+
+def test_cv_payload_has_only_summary_fields():
+    payload = cv_payload(CV_STATE)
+
+    assert set(payload["profile"]) == CV_PROFILE_FIELDS
+    text = str(payload)
+    for private in ["Rani", "Pekanbaru", "PT Rahasia", "12%", *CV_PROFILE.contacts]:
+        assert private not in text
+    assert cv_payload(None) is None
+
+
+def test_cv_answer_shows_cards_with_match_note(monkeypatch, make_repository):
+    _use(monkeypatch, CV_RESULT, repository=make_repository())
+    app = _app(CV_STATE)
+    app.chat_input[0].set_value("Lowongan yang cocok untukku").run()
+
+    texts = [md.value for md in app.markdown]
+    assert "**Kecocokan:** 81% cocok · skill cocok: SQL" in texts
+    assert "**Marketing Manager**  \nPT Delta" in texts
+    assert app.expander[-1].label.startswith("Detail: Hasil Cocokkan CV | 0 panggilan LLM")
+
+
+@pytest.mark.parametrize(
+    "cv",
+    [
+        {"profile": {"skills": "SQL"}, "matches": {}},
+        {"profile": {}},
+        "bukan objek",
+    ],
+)
+def test_route_rejects_invalid_cv(monkeypatch, cv):
+    graph = _use(monkeypatch, SQL_RESULT)
+    payload = {"history": [], "user_message": {"role": "user", "content": "Halo"}, "cv": cv}
+
+    with pytest.raises(routes.HTTPException) as error:
+        routes.chat_assistant(payload)
+
+    assert error.value.status_code == 422
+    assert graph.inputs == []
+
+
+def test_pending_question_from_other_page_is_answered_with_cv(calls):
+    app = AppTest.from_function(_page, default_timeout=APP_TIMEOUT)
+    app.session_state[CV_STATE_KEY] = CV_STATE
+    app.session_state[PENDING_KEY] = "Skill apa yang perlu kupelajari dulu?"
+    app.run()
+
+    assert not app.exception
+    assert calls[0]["messages"][-1]["content"] == "Skill apa yang perlu kupelajari dulu?"
+    assert calls[0]["matches"] == CV_MATCHES
+
+
+@pytest.mark.parametrize(("cv_state", "label"), [(None, "Upload CV"), (CV_STATE, "Koreksi profil")])
+def test_banner_button_opens_cv_match(calls, cv_state, label):
+    app = AppTest.from_file(str(APP_PATH), default_timeout=APP_TIMEOUT)
+    if cv_state is not None:
+        app.session_state[CV_STATE_KEY] = cv_state
+    app.run()
+    app.switch_page("pages/assistant_page.py").run()
+    _button(app, label).click().run()
+
+    assert not app.exception
+    assert app.markdown[0].value != "## Asisten Karier"
+    assert calls == []

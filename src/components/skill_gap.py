@@ -6,6 +6,10 @@ Cocokkan CV. Skill gap dihitung dari ``matches`` yang sudah ada (``src.cv.gap``:
 LLM saat tombol diklik, lalu di-cache di ``st.session_state["cv"]["plan"]`` per ``version``
 profil; "Ganti" CV menghapusnya bersama state CV.
 
+Tombol "Tanya Asisten" membuka Asisten Karier dengan pertanyaan skill gap yang langsung dijawab
+(1 panggilan LLM planner); Asisten membaca CV yang sama dari ``st.session_state``, sehingga
+pertanyaan lanjutan (misalnya lowongan yang meminta skill itu di kota tertentu) punya konteks.
+
 Bar memakai ``st.progress`` agar urutan tampil sama persis dengan urutan hitungan. Halaman
 tidak menampilkan estimasi kenaikan skor: menambah 2 skill gap teratas hanya menaikkan skor
 rata-rata top-10 sebesar 1,0-2,5 poin di set eval Cocokkan CV (porsi skill berbobot 40% dan
@@ -17,9 +21,10 @@ from typing import Any
 
 import streamlit as st
 
+from src.components.assistant_chat import PENDING_KEY
 from src.components.cv_match import load_dependencies
 from src.components.job_description import escape_markdown
-from src.components.navigation import CV_PAGE
+from src.components.navigation import ASSISTANT_PAGE, CV_PAGE
 from src.cv.gap import SkillCount, SkillGap, compute_skill_gap
 from src.cv.ingest import CV_STATE_KEY
 from src.cv.match import MatchResult
@@ -40,6 +45,7 @@ DEPENDENCY_ERROR = (
     "Rencana belajar belum bisa dibuat karena konfigurasi LLM belum lengkap. Periksa file .env."
 )
 PLAN_FAILED = "Rencana belajar gagal dibuat. Coba lagi beberapa saat lagi."
+ASSISTANT_QUESTION = "Skill apa yang perlu kupelajari dulu?"
 PLAN_HINT = (
     "Rencana 4 minggu disusun dari skill gap di kiri dengan 1 panggilan LLM. Yang dikirim "
     "hanya posisi tujuan, pengalaman, pendidikan, dan daftar skill; teks CV tidak dikirim."
@@ -70,6 +76,11 @@ def render_skill_gap_page() -> None:
         _render_counts("Sudah kamu punya", gap.have, gap.jobs, NO_HAVE)
     with right:
         _render_plan(state, gap)
+        if st.button(
+            "Tanya Asisten", icon=":material/chat:", width="stretch", key="gap_to_assistant"
+        ):
+            st.session_state[PENDING_KEY] = ASSISTANT_QUESTION
+            st.switch_page(ASSISTANT_PAGE)
 
 
 def _go_to_cv_match(message: str) -> None:

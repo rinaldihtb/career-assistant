@@ -5,6 +5,10 @@ ke ``POST /chat-assistant`` (``src/routes/routes.py``), yang menjalankan graph
 ``SupervisorAgent``; UI tidak memanggil agent secara langsung. Jawaban gabungan
 (``source="multi"``) ditampilkan per bagian dengan aturan yang sama seperti jawaban
 satu agent.
+
+CV dibaca dari ``st.session_state["cv"]`` yang diisi halaman Cocokkan CV. Jika ada, body API
+membawa profil ringkas dan hasil Cocokkan CV (``cv_payload``); nama, kontak, lokasi, riwayat
+kerja, pencapaian, dan teks CV tidak dikirim. Banner di atas chat menunjukkan apakah CV dipakai.
 """
 
 import logging
@@ -17,8 +21,11 @@ from typing import Any
 import requests
 import streamlit as st
 
+from src.agents.cv_agent import profile_label
 from src.components.job_description import description_to_markdown, escape_markdown
+from src.components.navigation import CV_PAGE
 from src.containers import get_job_repository, get_supervisor_agent
+from src.cv.ingest import CV_STATE_KEY
 from src.helpers.format import format_salary
 from src.models.agent import AgentResult
 
@@ -31,6 +38,25 @@ EXAMPLE_QUESTIONS = (
     "Lowongan data analyst di Jakarta",
     "Berapa rata-rata gaji lowongan di Surabaya?",
     "Saya lulusan akuntansi, lowongan apa yang cocok?",
+)
+# Satu contoh per jenis jawaban saat CV aktif: agent CV (lowongan, skill), lalu SQL dengan
+# posisi tujuan dari profil.
+CV_EXAMPLE_QUESTIONS = (
+    "Lowongan mana yang paling cocok dengan CV-ku?",
+    "Skill apa yang perlu kupelajari dulu?",
+    "Berapa rata-rata gaji untuk posisi yang kutuju?",
+)
+NO_CV_BANNER = (
+    "Belum ada CV, jadi jawaban hanya dari data lowongan. Upload CV di Cocokkan CV agar "
+    'Asisten bisa menjawab "lowongan yang cocok untukku" dan "skill apa yang kurang".'
+)
+CV_BANNER = (
+    "CV aktif: {file_name} · {label}. Profil ringkas (posisi tujuan, pengalaman, "
+    "pendidikan, skill) dipakai untuk menjawab; teks CV tidak dikirim."
+)
+# Field profil yang dibaca planner (``format_profile``) dan agent CV (``profile_label``).
+CV_PROFILE_FIELDS = frozenset(
+    {"target_role", "experience_months", "education_level", "education_major", "skills"}
 )
 DEPENDENCY_ERROR = (
     "Asisten belum bisa dijalankan karena konfigurasi LLM atau Qdrant belum lengkap. "
@@ -48,6 +74,7 @@ SOURCE_LABELS = {
     "sql": "Statistik data (SQL)",
     "general": "Pesan umum",
     "multi": "Gabungan beberapa agent",
+    "cv": "Hasil Cocokkan CV",
 }
 STEP_LABELS = {
     "planner": "Planner: pecah pertanyaan",
@@ -56,8 +83,9 @@ STEP_LABELS = {
     "sql_answer": "SQL: rangkum hasil",
     "rag_answer": "RAG: jawab dari kandidat",
 }
-# Label catatan di kartu: alasan relevansi (RAG) atau fakta dari query (SQL, misalnya gaji).
-NOTE_LABELS = {"rag": "Kenapa cocok", "sql": "Keterangan"}
+# Label catatan di kartu: alasan relevansi (RAG), fakta dari query (SQL, misalnya gaji), atau
+# skor dan skill yang cocok (CV).
+NOTE_LABELS = {"rag": "Kenapa cocok", "sql": "Keterangan", "cv": "Kecocokan"}
 # SQL bisa mengembalikan sampai 50 baris; kartu dibatasi agar halaman tetap ringkas.
 MAX_CARDS = 10
 
@@ -91,15 +119,18 @@ def render_assistant_page() -> None:
         st.error(DEPENDENCY_ERROR)
         return
 
+    cv: dict[str, Any] | None = st.session_state.get(CV_STATE_KEY)
+    _render_cv_banner(cv)
+
     messages: list[dict[str, Any]] = st.session_state.setdefault(MESSAGES_KEY, [])
     for message in messages:
         _render_message(message)
 
     question = st.chat_input("Tanya tentang lowongan...") or st.session_state.pop(PENDING_KEY, None)
     if question:
-        _answer(question, messages)
+        _answer(question, messages, cv)
     elif not messages:
-        _render_examples()
+        _render_examples(CV_EXAMPLE_QUESTIONS if cv else EXAMPLE_QUESTIONS)
 
     # Dirender terakhir agar langsung muncul setelah jawaban pertama.
     if messages:
@@ -109,12 +140,13 @@ def render_assistant_page() -> None:
 # --- Alur tanya-jawab --------------------------------------------------------
 
 
-def _answer(question: str, messages: list[dict[str, Any]]) -> None:
+def _answer(question: str, messages: list[dict[str, Any]], cv: dict[str, Any] | None) -> None:
     """Kirim pertanyaan ke API, tampilkan jawaban, lalu simpan ke riwayat.
 
     ``history`` diambil sebelum pertanyaan ditambahkan agar pertanyaan tidak terkirim
     dua kali. ``AgentResult`` dan durasi ikut disimpan agar kartu dan detail LLM tetap
     tampil saat rerun. Jika API gagal, pesan error tampil dan pertanyaan tetap di riwayat.
+    CV aktif dibaca saat bertanya, jadi koreksi profil di Cocokkan CV langsung berlaku.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
     user_message = {"role": "user", "content": question}
@@ -125,7 +157,7 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
         with st.spinner("Mencari jawaban..."):
             start = time.perf_counter()
             try:
-                result = ask_assistant_api(history, user_message)
+                result = ask_assistant_api(history, user_message, cv_payload(cv))
             except (requests.RequestException, KeyError, TypeError, ValueError):
                 logger.exception("Gagal memanggil Chat Assistant API")
                 st.error(API_ERROR)
@@ -146,11 +178,16 @@ def _answer(question: str, messages: list[dict[str, Any]]) -> None:
     )
 
 
-def ask_assistant_api(history: list[dict[str, str]], user_message: dict[str, str]) -> AgentResult:
+def ask_assistant_api(
+    history: list[dict[str, str]],
+    user_message: dict[str, str],
+    cv: dict[str, Any] | None = None,
+) -> AgentResult:
     """Kirim satu giliran chat ke ``POST /chat-assistant`` dan kembalikan ``AgentResult``-nya.
 
-    Respons API berbentuk ``{"result": AgentResult.model_dump(mode="json")}``, jadi job_ids,
-    rows, parts, dan usage ikut kembali untuk kartu dan detail LLM.
+    ``cv`` adalah hasil ``cv_payload`` (``None`` tanpa CV). Respons API berbentuk
+    ``{"result": AgentResult.model_dump(mode="json")}``, jadi job_ids, rows, parts, dan usage
+    ikut kembali untuk kartu dan detail LLM.
 
     Raises:
         requests.RequestException: API tidak terjangkau, timeout, atau status bukan 2xx.
@@ -160,7 +197,7 @@ def ask_assistant_api(history: list[dict[str, str]], user_message: dict[str, str
     base_url = os.getenv(API_URL_ENV) or DEFAULT_API_URL
     response = requests.post(
         f"{base_url.rstrip('/')}/chat-assistant",
-        json={"history": history, "user_message": user_message},
+        json={"history": history, "user_message": user_message, "cv": cv},
         timeout=API_TIMEOUT,
     )
     response.raise_for_status()
@@ -186,11 +223,28 @@ def _clear_messages() -> None:
 #     st.markdown(content if isinstance(content, str) else str(content))
 
 
-def _render_examples() -> None:
-    """Tombol contoh pertanyaan saat riwayat masih kosong."""
+def _render_cv_banner(cv: dict[str, Any] | None) -> None:
+    """Status CV di atas chat dan tombol ke Cocokkan CV (0 LLM)."""
+    if cv:
+        st.success(cv_banner(cv))
+        clicked = st.button("Koreksi profil", key="assistant_to_cv")
+    else:
+        st.info(NO_CV_BANNER)
+        clicked = st.button("Upload CV", key="assistant_to_cv")
+    if clicked:
+        st.switch_page(CV_PAGE)
+
+
+def _render_examples(questions: tuple[str, ...]) -> None:
+    """Tombol contoh pertanyaan saat riwayat masih kosong.
+
+    Lebar tombol mengikuti teks dan baris boleh turun, karena di kolom berlebar tetap teks
+    contoh terpotong pada lebar 1000 px.
+    """
     st.markdown("**Contoh pertanyaan:**")
-    for column, question in zip(st.columns(len(EXAMPLE_QUESTIONS)), EXAMPLE_QUESTIONS):
-        column.button(question, on_click=_ask, args=(question,), width="stretch")
+    with st.container(horizontal=True):
+        for index, question in enumerate(questions):
+            st.button(question, on_click=_ask, args=(question,), key=f"assistant_example_{index}")
 
 
 def _render_message(message: dict[str, Any]) -> None:
@@ -300,9 +354,9 @@ def prepare_display(result: AgentResult) -> Display:
     - RAG: kartu = ``result.rows`` (lowongan yang dikutip), catatan = alasan per ID
       dari jawaban. Jika ada lowongan yang barisnya tidak sesuai format, teks
       jawaban ditampilkan utuh dan kartu tanpa catatan.
-    - SQL: jika jawaban memuat baris ``- [ID:x] ...``, detail lowongannya diambil
+    - SQL dan CV: jika jawaban memuat baris ``- [ID:x] ...``, detail lowongannya diambil
       dari SQLite agar kartunya sama dengan RAG. Jika tidak (misalnya jawaban
-      jumlah atau rata-rata), hanya teks dan tabel.
+      jumlah, rata-rata, atau skill gap), hanya teks dan tabel.
     - Gabungan (``parts`` terisi): aturan di atas diterapkan per bagian.
     - Lainnya: hanya teks.
     """
@@ -327,6 +381,27 @@ def prepare_display(result: AgentResult) -> Display:
         logger.exception("Gagal mengambil detail lowongan untuk kartu SQL")
         return Display(result.answer)
     return Display(intro, [(job, notes.get(job["id"])) for job in jobs])
+
+
+def cv_payload(cv: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Bagian ``cv`` body API dari state CV aktif; ``None`` jika belum ada CV.
+
+    Profil hanya memuat ``CV_PROFILE_FIELDS``, sehingga nama, kontak, lokasi, riwayat kerja,
+    dan pencapaian tidak keluar dari proses Streamlit. ``matches`` dikirim utuh: isinya data
+    lowongan dan skor, dibutuhkan agent CV untuk jawaban lowongan teratas dan skill gap.
+    """
+    if not cv:
+        return None
+    return {
+        "profile": cv["profile"].model_dump(mode="json", include=CV_PROFILE_FIELDS),
+        "matches": cv["matches"].model_dump(mode="json"),
+    }
+
+
+def cv_banner(cv: dict[str, Any]) -> str:
+    """Teks banner CV aktif: nama file serta posisi tujuan dan rentang pengalaman."""
+    label = escape_markdown(profile_label(cv["profile"])) or "profil kosong"
+    return CV_BANNER.format(file_name=escape_markdown(cv["file_name"]), label=label)
 
 
 def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:

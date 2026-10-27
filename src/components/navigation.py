@@ -5,6 +5,7 @@ import streamlit as st
 from src.cv.ingest import CV_STATE_KEY
 
 CV_PAGE = "pages/cvmatch_page.py"
+ASSISTANT_PAGE = "pages/assistant_page.py"
 
 
 def render_navigation() -> None:
@@ -21,7 +22,7 @@ def render_navigation() -> None:
         st.page_link("pages/jobsearch_page.py", label="Cari Lowongan")
         st.page_link(CV_PAGE, label="Cocokkan CV")
         st.page_link("pages/skillgap_page.py", label="Skill Gap")
-        st.page_link("pages/assistant_page.py", label="Asisten Karier")
+        st.page_link(ASSISTANT_PAGE, label="Asisten Karier")
         st.divider()
         # Status saja, bukan link kedua: link "Cocokkan CV" di atas sudah ke halaman yang sama,
         # dan dua link aktif ke satu halaman tampil ganda di sidebar.
