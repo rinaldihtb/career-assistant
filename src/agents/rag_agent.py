@@ -1,9 +1,11 @@
 """RAG agent: mencari lowongan relevan lalu menjawab dengan sitasi [ID:x].
 
 Alur ``retrieve_jobs`` (tanpa LLM chat, hanya embedding query):
-    1. Deteksi lokasi dari kolom ``location`` melalui ``JobRepository``.
-    2. Cari chunk di Qdrant; bila ada lokasi, filter ``metadata.job_id`` dan
-       buang nama tempat dari query embedding.
+    1. Deteksi lokasi dari kolom ``location`` melalui ``JobRepository``; lokasi
+       setelah "selain/kecuali/di luar/bukan" menjadi pengecualian.
+    2. Cari chunk di Qdrant; bila ada lokasi, filter ``metadata.job_id`` (lowongan
+       di lokasi diminta dikurangi lokasi dikecualikan) dan buang nama tempat dari
+       query embedding.
     3. Buang chunk pendek, dedupe berdasarkan ``job_id``, lalu ambil kandidat
        dengan skor tertinggi.
     4. Ambil detail lowongan dari repository berdasarkan ID.
@@ -53,19 +55,24 @@ GENERIC_PLACE_WORDS = {
     "baru",
     "di",
 }
+# Kata sebelum nama tempat yang membalik maknanya. Tanpa ini "sales selain di Jakarta"
+# memfilter kandidat ke Jakarta dan jawabannya "tidak ada lowongan" (T14-02).
+EXCLUSION_PREFIX = r"(?:selain|kecuali|di\s+luar|bukan)\s+(?:(?:di|dari)\s+)?"
 
 
 class RetrievalResult(BaseModel):
     """Hasil pencarian lowongan sebelum dijawab LLM.
 
     Attributes:
-        places: Lokasi yang terdeteksi pada pertanyaan.
+        places: Lokasi yang diminta pada pertanyaan.
+        excluded_places: Lokasi yang dikecualikan ("selain Jakarta" -> ``["jakarta"]``).
         jobs: Lowongan terpilih, urut skor tertinggi, dengan ``score`` dan
             ``matched_chunk`` untuk setiap lowongan.
     """
 
     jobs: list[dict[str, Any]] = Field(default_factory=list)
     places: list[str] = Field(default_factory=list)
+    excluded_places: list[str] = Field(default_factory=list)
 
 
 class RagAgent:
@@ -104,15 +111,23 @@ class RagAgent:
         """Cari lowongan relevan dan simpan hasil lengkap sebagai tool artifact.
 
         Jika pertanyaan menyebut lokasi, pencarian Qdrant dibatasi ke lowongan
-        di lokasi tersebut. Jika tidak, kandidat dengan skor di bawah
+        di lokasi yang diminta (semua lokasi jika hanya ada pengecualian) dikurangi
+        lokasi yang dikecualikan. Jika tidak, kandidat dengan skor di bawah
         ``score_threshold`` dibuang. Hasilnya berupa JSON untuk LLM dan
         ``RetrievalResult`` untuk supervisor.
         """
         place_index = self._build_place_index(self.job_repository.get_job_locations())
-        places = self._find_places(question, place_index)
+        detected = self._find_places(question, place_index)
+        places, excluded = self._split_excluded_places(question, detected)
 
-        search_query = self._remove_places(question, places)
-        qdrant_filter = self._build_filter(place_index, places)
+        search_query = self._remove_places(question, detected)
+        qdrant_filter = None
+        if detected:
+            job_ids = self._allowed_job_ids(place_index, places, excluded)
+            if not job_ids:
+                result = RetrievalResult(places=places, excluded_places=excluded)
+                return result.model_dump_json(), result
+            qdrant_filter = self._build_filter(job_ids)
         chunks = self.job_repository.similarity_search_with_score(
             search_query, k=k, filter=qdrant_filter
         )
@@ -125,7 +140,7 @@ class RagAgent:
             best_chunks.setdefault(int(job_id), (float(score), document.page_content))
 
         ranked = sorted(best_chunks.items(), key=lambda item: item[1][0], reverse=True)
-        if not places:
+        if qdrant_filter is None:
             ranked = [item for item in ranked if item[1][0] >= score_threshold]
 
         selected = ranked[:top_n]
@@ -134,7 +149,7 @@ class RagAgent:
         for job in jobs:
             job["score"], job["matched_chunk"] = chunks_by_id[job["id"]]
 
-        result = RetrievalResult(jobs=jobs, places=places)
+        result = RetrievalResult(jobs=jobs, places=places, excluded_places=excluded)
         return result.model_dump_json(), result
 
     def _build_place_index(self, job_locations: Iterable[tuple[int, str]]) -> dict[str, set[int]]:
@@ -175,13 +190,32 @@ class RagAgent:
         words = r"\s+".join(map(re.escape, place.split()))
         return re.compile(rf"(?<!\w){words}(?!\w)", re.IGNORECASE)
 
-    def _build_filter(
-        self, place_index: dict[str, set[int]], places: list[str]
-    ) -> models.Filter | None:
-        """Buat filter Qdrant berdasarkan ID lowongan di lokasi terpilih."""
-        if not places:
-            return None
-        job_ids = set().union(*(place_index[place] for place in places))
+    def _split_excluded_places(
+        self, question: str, places: Iterable[str]
+    ) -> tuple[list[str], list[str]]:
+        """Pisahkan lokasi menjadi ``(diminta, dikecualikan)``.
+
+        Lokasi dikecualikan jika langsung didahului ``EXCLUSION_PREFIX``. Regex cukup
+        karena pengecualian lokasi hampir selalu memakai empat kata itu; "selain Jakarta
+        dan Bandung" hanya mengecualikan Jakarta.
+        """
+        included: list[str] = []
+        excluded: list[str] = []
+        for place in places:
+            words = r"\s+".join(map(re.escape, place.split()))
+            pattern = re.compile(rf"(?<!\w){EXCLUSION_PREFIX}{words}(?!\w)", re.IGNORECASE)
+            (excluded if pattern.search(question) else included).append(place)
+        return included, excluded
+
+    def _allowed_job_ids(
+        self, place_index: dict[str, set[int]], places: list[str], excluded: list[str]
+    ) -> set[int]:
+        """ID lowongan di ``places`` (atau semua lokasi jika kosong) dikurangi ``excluded``."""
+        allowed = set().union(*(place_index[place] for place in places or place_index))
+        return allowed - set().union(*(place_index[place] for place in excluded))
+
+    def _build_filter(self, job_ids: Iterable[int]) -> models.Filter:
+        """Buat filter Qdrant yang hanya meloloskan chunk dengan ``metadata.job_id`` di daftar."""
         return models.Filter(
             must=[models.FieldCondition(key=JOB_ID_KEY, match=models.MatchAny(any=sorted(job_ids)))]
         )

@@ -14,6 +14,8 @@ from src.agents.prompts import (
     SUPERVISOR_CLARIFY_SYSTEM,
     SUPERVISOR_DECLINED_NOTE,
     SUPERVISOR_GENERAL_MESSAGE,
+    SUPERVISOR_NO_HISTORY,
+    SUPERVISOR_PLANNER_USER,
     SUPERVISOR_REFUSE_MESSAGE,
     SUPERVISOR_SKIPPED_NOTE,
     SUPERVISOR_UNSUPPORTED_MESSAGE,
@@ -142,7 +144,8 @@ def test_more_than_three_subtasks_are_cut_to_three(make_repository):
     state = _invoke(llm, make_repository(CHUNKS), "empat pertanyaan")
 
     assert [task["question"] for task in state["subtasks"]] == questions[:3]
-    assert len(state["result"].parts) == 3
+    assert state["skipped"] == questions[3:]
+    assert state["result"].parts[-1].answer == f"{SUPERVISOR_SKIPPED_NOTE}\n- Pertanyaan 3"
 
 
 def test_declined_part_adds_note_to_single_answer(make_repository):
@@ -239,7 +242,7 @@ def test_unparsable_plan_becomes_clarify_and_keeps_usage(make_repository):
     assert state["planner_usage"].llm_calls == 1
 
 
-def test_planner_sees_history_messages_and_question(make_repository):
+def test_planner_gets_labelled_history_and_last_question_in_one_message(make_repository):
     llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="refuse")))
     history = [
         {"role": "user", "content": "Lowongan marketing di Medan"},
@@ -248,11 +251,34 @@ def test_planner_sees_history_messages_and_question(make_repository):
     _invoke(llm, make_repository(), "Yang full time?", history)
 
     planner_messages = llm.received[0]
-    assert [m.content for m in planner_messages[-3:]] == [
-        "Lowongan marketing di Medan",
-        "Ada 2 lowongan.",
-        "Yang full time?",
-    ]
+    assert len(planner_messages) == 2
+    assert planner_messages[1].content == SUPERVISOR_PLANNER_USER.format(
+        history="Pengguna: Lowongan marketing di Medan\nAsisten: Ada 2 lowongan.",
+        question="Yang full time?",
+    )
+
+
+def test_planner_without_history_says_so(make_repository):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="refuse")))
+    _invoke(llm, make_repository(), "Lowongan admin")
+
+    assert llm.received[0][1].content == SUPERVISOR_PLANNER_USER.format(
+        history=SUPERVISOR_NO_HISTORY, question="Lowongan admin"
+    )
+
+
+def test_sql_list_answer_is_completed_from_rows(make_repository):
+    list_sql = "SELECT id, job_title, company_name, location FROM jobs WHERE id IN (1, 4)"
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(("sql", SQL_Q)),
+            sql={SQL_Q: list_sql},
+            answers={SQL_Q: "Berikut lowongannya:\n- [ID:1] Data Analyst - PT Alpha (Jakarta)"},
+        )
+    )
+    result = _invoke(llm, make_repository(), SQL_Q)["result"]
+
+    assert result.answer.endswith("- [ID:4] Marketing Manager - PT Delta (Jakarta Raya (Hibrid))")
 
 
 def test_graph_structure(make_repository):

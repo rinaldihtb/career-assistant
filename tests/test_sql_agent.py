@@ -36,6 +36,14 @@ def test_query_jobs_success_uses_one_llm_call(make_repository, fake_llm):
     assert len(llm.received) == 1
 
 
+def test_query_jobs_runs_stemmed_title_pattern(make_repository, fake_llm):
+    llm = fake_llm("SELECT COUNT(*) AS jumlah FROM jobs WHERE lower(job_title) LIKE '%designer%'")
+    _, result = SqlAgent(llm, make_repository()).query_jobs("Berapa lowongan designer?")
+
+    assert "LIKE '%design%'" in result.sql
+    assert result.rows == [{"jumlah": 1}]
+
+
 def test_generation_calls_are_recorded_in_artifact_usage(make_repository, fake_llm):
     llm = fake_llm("SELECT kolom_palsu FROM jobs", "SELECT COUNT(*) AS jumlah FROM jobs")
     content, result = SqlAgent(llm, make_repository()).query_jobs("Total lowongan?")

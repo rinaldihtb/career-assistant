@@ -1,10 +1,12 @@
 """SQL agent: menjawab pertanyaan statistik lowongan dengan query SQLite.
 
-Alur: LLM menulis SQL -> validasi -> repository mengeksekusi query -> LLM
-merangkum hasil. Data SQL dikirim ke supervisor sebagai tool artifact.
+Alur: LLM menulis SQL -> validasi -> pola judul dipotong ke kata dasar -> repository
+mengeksekusi query -> LLM merangkum hasil. Data SQL dikirim ke supervisor sebagai tool
+artifact; supervisor melengkapi jawaban dengan ``finalize_answer``.
 """
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from langchain.agents import create_agent
@@ -18,9 +20,12 @@ from src.agents.prompts import (
     SQL_ANSWER_SYSTEM,
     SQL_GENERATION_SYSTEM,
     SQL_GENERATION_USER,
+    SQL_NO_SALARY_NOTE,
     SQL_NOT_RELEVANT_TOKEN,
     SQL_RETRY_USER,
+    SQL_TRUNCATED_NOTE,
 )
+from src.helpers.format import format_salary
 from src.models.agent import LLMUsage
 from src.repositories.job_repository import JobRepository
 
@@ -38,6 +43,28 @@ _WRITE_KEYWORD = re.compile(
     re.IGNORECASE,
 )
 _TRAILING_LIMIT = re.compile(r"\blimit\s+\d+(\s*(,|offset)\s*\d+)?\s*$", re.IGNORECASE)
+_TITLE_PATTERN = re.compile(r"(lower\(\s*job_title\s*\)\s+LIKE\s+')([^']*)(')", re.IGNORECASE)
+# Akhiran pelaku dipotong ke kata dasar: '%design%' juga mencocokkan "Designer", tetapi
+# '%designer%' tidak mencocokkan "Graphic Design" (T11-03 menjawab 1, gold 2).
+_TITLE_STEMS = {"designer": "design", "desainer": "desain"}
+_TITLE_STEM_WORD = re.compile(r"\b(" + "|".join(_TITLE_STEMS) + r")\b")
+_CITATION_TAG = re.compile(r"\[ID:\s*(\d+)\]", re.IGNORECASE)
+# Kalimat jumlah lowongan tanpa gaji versi LLM ("12 lowongan lain tidak mencantumkan gaji.",
+# "Terdapat 12 lowongan tanpa gaji." di T1b-02); dibuang lalu ditulis ulang dari kolom
+# lowongan_tanpa_gaji.
+_NO_SALARY_SENTENCE = re.compile(
+    r"[ \t]*(?:(?:terdapat|ada)\s+)?\d+\s+lowongan\s+(?:lain\s+)?"
+    r"(?:tanpa|tidak\s+mencantumkan)\s+gaji\.?",
+    re.IGNORECASE,
+)
+# "<n> dari <m> lowongan mencantumkan gaji" hanya sah jika hasil punya kolom
+# lowongan_dengan_gaji. Di bawah daftar lowongan LLM menulisnya dari angka karangan
+# (T3-02: "4 lowongan mencantumkan gaji dari 6 total lowongan").
+_SALARY_COUNT_SENTENCE = re.compile(
+    r"[ \t]*(?:\S+\s+dari\s+\S+\s+lowongan\s+mencantumkan\s+gaji"
+    r"|\d+\s+lowongan\s+mencantumkan\s+gaji\s+dari\s+\d+[^\n.]*)\.?",
+    re.IGNORECASE,
+)
 
 
 class SQLQueryResult(BaseModel):
@@ -90,7 +117,7 @@ class SqlAgent:
                     result = SQLQueryResult(error=SQL_NOT_RELEVANT_TOKEN, usage=usage)
                     return result.model_dump_json(exclude={"usage"}), result
 
-                sql = self.validate_sql(sql)
+                sql = self.stem_title_patterns(self.validate_sql(sql))
                 rows = self.job_repository.execute_sql(sql, max_rows=DEFAULT_MAX_ROWS)
                 job_ids = [row["id"] for row in rows if isinstance(row.get("id"), int)]
                 result = SQLQueryResult(sql=sql, rows=rows, job_ids=job_ids, usage=usage)
@@ -171,3 +198,80 @@ class SqlAgent:
         if not _TRAILING_LIMIT.search(code):
             cleaned = f"{cleaned}\nLIMIT {DEFAULT_MAX_ROWS}"
         return cleaned
+
+    def stem_title_patterns(self, sql: str) -> str:
+        """Potong akhiran pelaku di pola ``lower(job_title) LIKE '...'``: designer -> design.
+
+        Pola kata dasar mencakup pola aslinya, jadi tidak ada lowongan yang hilang;
+        tambahannya hanya judul berkata dasar sama ("Graphic Design" untuk "graphic
+        designer"). Pola lokasi dan perusahaan tidak diubah. Aturan ejaan di prompt
+        tidak cukup: LLM tetap menulis '%graphic designer%' di T11-03.
+        """
+
+        def stem(match: re.Match[str]) -> str:
+            pattern = _TITLE_STEM_WORD.sub(lambda word: _TITLE_STEMS[word.group(1)], match[2])
+            return f"{match[1]}{pattern}{match[3]}"
+
+        return _TITLE_PATTERN.sub(stem, sql)
+
+
+def format_job_line(row: dict[str, Any]) -> str:
+    """Satu baris lowongan dengan format jawaban SQL: ``- [ID:x] Judul - Perusahaan (Lokasi)``.
+
+    Rentang gaji ditambahkan jika baris punya ``salary_min``.
+    """
+    location = " ".join(str(row.get("location") or "").split())
+    line = f"- [ID:{row['id']}] {row['job_title']} - {row.get('company_name') or '-'} ({location})"
+    if row.get("salary_min") is not None:
+        line += f": {format_salary(row['salary_min'], row.get('salary_max'))}"
+    return line
+
+
+def complete_job_list(answer: str, rows: Iterable[dict[str, Any]]) -> str:
+    """Sisipkan baris lowongan hasil query yang tidak dikutip LLM setelah baris ``[ID:x]`` terakhir.
+
+    Hanya berlaku jika jawaban sudah berupa daftar (minimal satu ``[ID:x]``); jawaban
+    statistik tidak diubah. Aturan "tampilkan setiap baris" di prompt tidak cukup: LLM
+    menyaring ulang dan membuang lowongan bergaji 9-12 juta untuk "di atas 10 juta"
+    (T1b-02) dan 7-10 juta untuk "di atas 8 juta" (T3-02).
+    """
+    cited = {int(job_id) for job_id in _CITATION_TAG.findall(answer)}
+    if not cited:
+        return answer
+    missing = [
+        format_job_line(row)
+        for row in rows
+        if isinstance(row.get("id"), int) and row["id"] not in cited and row.get("job_title")
+    ]
+    if not missing:
+        return answer
+    lines = answer.split("\n")
+    last = max(index for index, line in enumerate(lines) if _CITATION_TAG.search(line))
+    return "\n".join([*lines[: last + 1], *missing, *lines[last + 1 :]])
+
+
+def finalize_answer(
+    answer: str, rows: list[dict[str, Any]], max_rows: int = DEFAULT_MAX_ROWS
+) -> str:
+    """Tulis dengan kode bagian jawaban yang faktanya sudah pasti di hasil query.
+
+    Urutan: daftar dilengkapi (``complete_job_list``); kalimat "<n> dari <m> lowongan
+    mencantumkan gaji" dibuang jika hasil tidak punya kolom ``lowongan_dengan_gaji``;
+    kalimat jumlah lowongan tanpa gaji versi LLM diganti ``SQL_NO_SALARY_NOTE`` dari
+    kolom ``lowongan_tanpa_gaji`` (hanya jika > 0); catatan ``SQL_TRUNCATED_NOTE`` jika
+    jumlah baris mencapai ``max_rows``. Tanpa baris hasil, jawaban tidak diubah.
+    """
+    if not rows:
+        return answer
+    answer = complete_job_list(answer, rows)
+    if "lowongan_dengan_gaji" not in rows[0]:
+        answer = _SALARY_COUNT_SENTENCE.sub("", answer)
+    no_salary = rows[0].get("lowongan_tanpa_gaji")
+    if no_salary is not None:
+        answer = _NO_SALARY_SENTENCE.sub("", answer)
+    answer = re.sub(r"\n{3,}", "\n\n", answer).strip()
+    if isinstance(no_salary, int) and no_salary > 0:
+        answer = f"{answer}\n\n{SQL_NO_SALARY_NOTE.format(count=no_salary)}"
+    if len(rows) >= max_rows:
+        answer = f"{answer}\n\n{SQL_TRUNCATED_NOTE.format(max_rows=max_rows)}"
+    return answer

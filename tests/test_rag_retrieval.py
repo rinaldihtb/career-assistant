@@ -166,6 +166,41 @@ def test_place_filter_restricts_to_place_jobs(make_repository):
     assert [job["id"] for job in result.jobs] == [1, 6]
 
 
+def test_excluded_place_keeps_jobs_elsewhere(make_repository):
+    repository = make_repository(CHUNKS)
+    result = _retrieve(repository, "lowongan data selain di Jakarta")
+
+    call = repository.vector_db.calls[0]
+    assert (result.places, result.excluded_places) == ([], ["jakarta"])
+    assert set(call["filter"].must[0].match.any) == {2, 3, 5}
+    assert call["query"] == "lowongan data selain di"
+    assert [job["id"] for job in result.jobs] == [2, 5, 3]  # filter aktif: tanpa threshold
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Lowongan di Jawa kecuali Bandung",
+        "Lowongan di Jawa di luar Bandung",
+        "Jawa, bukan dari Bandung",
+    ],
+)
+def test_requested_place_minus_excluded_place(make_repository, question):
+    repository = make_repository(CHUNKS)
+    result = _retrieve(repository, question)
+
+    assert (result.places, result.excluded_places) == (["jawa"], ["bandung"])
+    assert set(repository.vector_db.calls[0]["filter"].must[0].match.any) == {2}
+
+
+def test_no_job_left_after_exclusion_skips_search(make_repository):
+    repository = make_repository(CHUNKS)
+    result = _retrieve(repository, "Lowongan di Jakarta Selatan selain Jakarta")
+
+    assert result.jobs == []
+    assert repository.vector_db.calls == []
+
+
 def test_all_below_threshold_returns_empty(make_repository):
     result = _retrieve(make_repository([(1, LONG, 0.40), (2, LONG, 0.30)]), "resep nasi goreng")
     assert result.jobs == []
@@ -209,7 +244,7 @@ def test_job_id_filter_works_on_real_qdrant(agent):
     store = QdrantVectorStore.from_documents(
         docs, DeterministicFakeEmbedding(size=16), location=":memory:", collection_name="jobs"
     )
-    place_filter = agent._build_filter({"x": {1, 4, 6}}, ["x"])
+    place_filter = agent._build_filter({1, 4, 6})
     hits = store.similarity_search_with_score("deskripsi", k=20, filter=place_filter)
 
     assert {doc.metadata["job_id"] for doc, _ in hits} == {1, 4, 6}

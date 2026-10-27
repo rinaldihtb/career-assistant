@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import DBAPIError
 
-from src.agents.prompts import SQL_SCHEMA_COLUMNS
-from src.agents.sql_agent import SqlAgent
+from src.agents.prompts import SQL_NO_SALARY_NOTE, SQL_SCHEMA_COLUMNS, SQL_TRUNCATED_NOTE
+from src.agents.sql_agent import SqlAgent, complete_job_list, finalize_answer
 from src.repositories.job_repository import connect_readonly
 
 REAL_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "database.sqlite"
@@ -185,3 +185,83 @@ def test_schema_prompt_matches_database():
         db_columns = {column[0] for column in cursor.description}
     missing = set(SQL_SCHEMA_COLUMNS) - db_columns
     assert not missing, f"Kolom di prompt tidak ada di database: {missing}"
+
+
+# --- stem_title_patterns -----------------------------------------------------
+
+
+def test_stem_cuts_title_pattern_to_base_word(agent):
+    sql = (
+        "SELECT COUNT(*) FROM jobs WHERE (lower(job_title) LIKE '%graphic designer%' "
+        "OR lower(job_title) LIKE '%desainer grafis%') AND lower(company_name) LIKE '%designer%'"
+    )
+    assert agent.stem_title_patterns(sql) == (
+        "SELECT COUNT(*) FROM jobs WHERE (lower(job_title) LIKE '%graphic design%' "
+        "OR lower(job_title) LIKE '%desain grafis%') AND lower(company_name) LIKE '%designer%'"
+    )
+
+
+def test_stem_leaves_other_words_alone(agent):
+    sql = "SELECT id FROM jobs WHERE lower(job_title) LIKE '%designers%' LIMIT 5"
+    assert agent.stem_title_patterns(sql) == sql
+
+
+# --- finalize_answer ---------------------------------------------------------
+
+ROWS = [
+    {"id": 1, "job_title": "Sales", "company_name": "PT A", "location": "Surabaya, Jawa Timur",
+     "salary_min": 13_000_000, "salary_max": 18_000_000, "lowongan_tanpa_gaji": 12},
+    {"id": 2, "job_title": "Finance", "company_name": "PT B", "location": "Surabaya, Jawa Timur",
+     "salary_min": 9_000_000, "salary_max": 12_000_000, "lowongan_tanpa_gaji": 12},
+]  # fmt: skip
+
+
+def test_missing_listed_row_is_inserted_after_last_cited_line():
+    answer = "Berikut daftarnya:\n- [ID:1] Sales - PT A (Surabaya)\n\nHanya itu."
+    assert complete_job_list(answer, ROWS) == (
+        "Berikut daftarnya:\n- [ID:1] Sales - PT A (Surabaya)\n"
+        "- [ID:2] Finance - PT B (Surabaya, Jawa Timur): Rp9.000.000 - Rp12.000.000 per bulan"
+        "\n\nHanya itu."
+    )
+
+
+def test_answer_without_citation_is_not_completed():
+    assert complete_job_list("Ada 2 lowongan.", ROWS) == "Ada 2 lowongan."
+
+
+@pytest.mark.parametrize(
+    "llm_sentence",
+    ["12 lowongan lain tidak mencantumkan gaji.", "Terdapat 12 lowongan tanpa gaji."],
+)
+def test_no_salary_sentence_is_rewritten_from_column(llm_sentence):
+    answer = f"- [ID:1] Sales\n- [ID:2] Finance\n\n{llm_sentence}"
+    assert finalize_answer(answer, ROWS) == (
+        f"- [ID:1] Sales\n- [ID:2] Finance\n\n{SQL_NO_SALARY_NOTE.format(count=12)}"
+    )
+
+
+def test_zero_no_salary_count_adds_no_note():
+    rows = [{**row, "lowongan_tanpa_gaji": 0} for row in ROWS]
+    answer = "- [ID:1] Sales\n- [ID:2] Finance\n0 lowongan lain tidak mencantumkan gaji."
+    assert finalize_answer(answer, rows) == "- [ID:1] Sales\n- [ID:2] Finance"
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    ["4 dari 6 lowongan mencantumkan gaji.", "4 lowongan mencantumkan gaji dari 6 total lowongan."],
+)
+def test_salary_count_sentence_needs_its_column(sentence):
+    rows = [{"id": 1, "job_title": "Sales"}]
+    assert finalize_answer(f"- [ID:1] Sales\n\n{sentence}", rows) == "- [ID:1] Sales"
+    stats = [{"rata_gaji_min": 1, "lowongan_dengan_gaji": 4, "total_lowongan": 6}]
+    assert finalize_answer(f"Rata-rata Rp1.\n{sentence}", stats) == f"Rata-rata Rp1.\n{sentence}"
+
+
+def test_truncated_note_when_rows_reach_limit():
+    rows = [{"id": 1, "job_title": "Sales"}, {"id": 2, "job_title": "Finance"}]
+    answer = finalize_answer("- [ID:1] Sales\n- [ID:2] Finance", rows, max_rows=2)
+    assert answer.endswith(SQL_TRUNCATED_NOTE.format(max_rows=2))
+
+
+def test_empty_rows_leave_answer_unchanged():
+    assert finalize_answer("Tidak ada lowongan.", []) == "Tidak ada lowongan."

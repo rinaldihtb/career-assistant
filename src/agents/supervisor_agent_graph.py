@@ -28,7 +28,7 @@ from src.agents.prompts import (
     SUPERVISOR_UNSUPPORTED_MESSAGE,
 )
 from src.agents.rag_agent import RetrievalResult
-from src.agents.sql_agent import SQLQueryResult
+from src.agents.sql_agent import SQLQueryResult, finalize_answer
 from src.models.agent import AgentResult, LLMUsage
 from src.repositories.job_repository import JobRepository
 
@@ -171,16 +171,17 @@ class SupervisorAgent:
         self.graph = self.create_supervisor_agent()
 
     def planner(self, state: SupervisorState) -> dict:
-        """Ubah satu pertanyaan menjadi satu atau beberapa sub-tugas worker."""
+        """Ubah pesan pengguna terakhir menjadi satu atau beberapa sub-tugas worker.
+
+        Pertanyaan terakhir dan riwayat berlabel Pengguna/Asisten diambil dari
+        ``messages`` (``_chat_context``) dan dikirim dalam satu pesan
+        ``SUPERVISOR_PLANNER_USER``. Sub-tugas di atas ``MAX_SUBTASKS`` masuk ``skipped``
+        agar pengguna diberi tahu bagian yang belum dijawab.
+        """
+        question, history, _ = _chat_context(state.get("messages", []))
         messages = [
             SystemMessage(SUPERVISOR_PLANNER_SYSTEM.format(max_subtasks=MAX_SUBTASKS)),
-            HumanMessage(
-                SUPERVISOR_PLANNER_USER.format(
-                    history=self.format_history(state.get("history", [])),
-                    question=state.get("question", "").strip(),
-                )
-            ),
-            *state.get("messages", []),
+            HumanMessage(SUPERVISOR_PLANNER_USER.format(history=history, question=question)),
         ]
         fallback: dict = {"response": "clarify", "subtasks": [], "skipped": [], "declined": []}
         try:
@@ -205,25 +206,14 @@ class SupervisorAgent:
         response: Response = (
             parsed_plan.response if subtasks or parsed_plan.response != "answer" else "clarify"
         )
+        overflow = [task["question"] for task in subtasks[MAX_SUBTASKS:]]
         return {
             "response": response,
             "subtasks": subtasks[:MAX_SUBTASKS],
-            "skipped": parsed_plan.skipped,
+            "skipped": [*parsed_plan.skipped, *overflow],
             "declined": parsed_plan.declined,
             "planner_usage": usage,
         }
-
-    def format_history(self, history: Sequence[Mapping[str, str]]) -> str:
-        """Ubah riwayat chat menjadi teks singkat untuk prompt."""
-        lines = []
-        for message in list(history)[-MAX_HISTORY_MESSAGES:]:
-            role = "Pengguna" if message.get("role") == "user" else "Asisten"
-            content = " ".join(str(message.get("content", "")).split())
-            if len(content) > MAX_HISTORY_CHARS:
-                content = f"{content[:MAX_HISTORY_CHARS]}..."
-            if content:
-                lines.append(f"{role}: {content}")
-        return "\n".join(lines) or SUPERVISOR_NO_HISTORY
 
     def dispatch(self, state: SupervisorState) -> list[Send] | str:
         """Kirim setiap sub-tugas ke worker yang sesuai, atau langsung merespons."""
@@ -304,7 +294,7 @@ class SupervisorAgent:
         )
         if sql_data is not None:
             sql_result = AgentResult(
-                answer=str(answer),
+                answer=finalize_answer(str(answer), sql_data.rows),
                 source="sql",
                 job_ids=sql_data.job_ids,
                 sql=sql_data.sql,
