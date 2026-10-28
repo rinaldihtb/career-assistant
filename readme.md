@@ -38,7 +38,10 @@ make run
 ```
 
 Streamlit di http://localhost:8501. Halaman Asisten memanggil API di `ASSISTANT_API_URL`
-(default `http://localhost:8000`); dokumentasi API di http://localhost:8000/docs.
+(default `http://localhost:8000`); dokumentasi API di http://localhost:8000/docs. Jika
+`ASSISTANT_API_KEY` diisi, Streamlit mengirimnya sebagai header `X-API-Key` dan API menolak
+request tanpa header yang sama (401); isi nilai yang sama di kedua sisi saat API bisa diakses
+publik.
 
 Docker:
 

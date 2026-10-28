@@ -1,8 +1,10 @@
 """HTTP routes exposed by the Career Assistant API."""
 
-from typing import Any
+import hmac
+import os
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import ValidationError
 
 from src.containers import get_supervisor_agent
@@ -10,16 +12,25 @@ from src.cv.match import MatchResult
 from src.cv.profile import CVProfile
 
 router = APIRouter(tags=["chat"])
+# Kunci bersama Streamlit dan API; kosong = tanpa pemeriksaan (pengembangan lokal).
+API_KEY_ENV = "ASSISTANT_API_KEY"
 
 
 @router.post("/chat-assistant")
-def chat_assistant(payload: dict[str, Any]) -> dict[str, Any]:
+def chat_assistant(
+    payload: dict[str, Any], x_api_key: Annotated[str | None, Header()] = None
+) -> dict[str, Any]:
     """Jawab pesan pengguna baru beserta riwayat chat dan, jika ada, CV aktif.
 
     Body: ``history`` (daftar pesan), ``user_message``, dan ``cv`` opsional berisi
     ``{"profile": CVProfile, "matches": MatchResult}`` dalam bentuk JSON. Isi body tidak
     di-log karena memuat profil CV. ``cv`` yang tidak sesuai skema menghasilkan 422.
+    Jika env ``ASSISTANT_API_KEY`` terisi, header ``X-API-Key`` wajib sama (401 jika tidak),
+    karena URL API publik dan setiap jawaban memakai kredit OpenAI.
     """
+    expected = os.getenv(API_KEY_ENV)
+    if expected and not hmac.compare_digest((x_api_key or "").encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="X-API-Key tidak valid.")
     history = payload.get("history", [])
     user_message = payload.get("user_message")
     if not isinstance(history, list) or not isinstance(user_message, dict):

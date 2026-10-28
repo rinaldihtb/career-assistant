@@ -63,6 +63,8 @@ API_ERROR = "Asisten belum bisa dihubungi. Silakan coba lagi."
 # layanan (http://fastapi:8000); tanpa env, `make api` di mesin yang sama.
 API_URL_ENV = "ASSISTANT_API_URL"
 DEFAULT_API_URL = "http://localhost:8000"
+# Dikirim sebagai header X-API-Key jika terisi; nilainya sama dengan env API.
+API_KEY_ENV = "ASSISTANT_API_KEY"
 # (connect, read) detik; jawaban terlama di set eval 14 detik.
 API_TIMEOUT = (5, 90)
 SOURCE_LABELS = {
@@ -184,9 +186,11 @@ def ask_assistant_api(
             ``pydantic.ValidationError``).
     """
     base_url = os.getenv(API_URL_ENV) or DEFAULT_API_URL
+    api_key = os.getenv(API_KEY_ENV)
     response = requests.post(
         f"{base_url.rstrip('/')}/chat-assistant",
         json={"history": history, "user_message": user_message, "cv": cv},
+        headers={"X-API-Key": api_key} if api_key else {},
         timeout=API_TIMEOUT,
     )
     response.raise_for_status()

@@ -117,9 +117,9 @@ def _use(monkeypatch, *results: AgentResult, repository=None) -> FakeGraph:
     agent = SimpleNamespace(graph=graph)
     monkeypatch.setattr(routes, "get_supervisor_agent", lambda: agent)
 
-    def post(url, *, json, timeout):
+    def post(url, *, json, headers, timeout):
         graph.urls.append(url)
-        return FakeResponse(routes.chat_assistant(json))
+        return FakeResponse(routes.chat_assistant(json, x_api_key=headers.get("X-API-Key")))
 
     monkeypatch.setattr(assistant_chat.requests, "post", post)
     if repository is not None:
@@ -280,10 +280,33 @@ def test_api_url_comes_from_env(monkeypatch):
     ]
 
 
+def test_api_key_from_env_is_sent_and_accepted(monkeypatch):
+    graph = _use(monkeypatch, SQL_RESULT)
+    monkeypatch.setenv("ASSISTANT_API_KEY", "rahasia")
+    app = _app()
+    app.chat_input[0].set_value("Rata-rata gaji di Surabaya?").run()
+
+    assert not app.error
+    assert len(graph.inputs) == 1
+
+
+@pytest.mark.parametrize("header", [None, "salah"])
+def test_route_rejects_wrong_api_key(monkeypatch, header):
+    graph = _use(monkeypatch, SQL_RESULT)
+    monkeypatch.setenv("ASSISTANT_API_KEY", "rahasia")
+    payload = {"history": [], "user_message": {"role": "user", "content": "Halo"}}
+
+    with pytest.raises(routes.HTTPException) as error:
+        routes.chat_assistant(payload, x_api_key=header)
+
+    assert error.value.status_code == 401
+    assert graph.inputs == []
+
+
 def test_unreachable_api_shows_error_and_keeps_question(monkeypatch):
     _use(monkeypatch, SQL_RESULT)
 
-    def down(url, *, json, timeout):
+    def down(url, *, json, headers, timeout):
         raise requests.ConnectionError("tidak terjangkau")
 
     monkeypatch.setattr(assistant_chat.requests, "post", down)
@@ -557,6 +580,7 @@ def test_cv_answer_shows_cards_with_match_note(monkeypatch, make_repository):
 )
 def test_route_rejects_invalid_cv(monkeypatch, cv):
     graph = _use(monkeypatch, SQL_RESULT)
+    monkeypatch.delenv("ASSISTANT_API_KEY", raising=False)
     payload = {"history": [], "user_message": {"role": "user", "content": "Halo"}, "cv": cv}
 
     with pytest.raises(routes.HTTPException) as error:

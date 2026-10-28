@@ -1,7 +1,10 @@
 """Streamlit application entry point."""
 
 import streamlit as st
+from dotenv import load_dotenv
 
+# Env dimuat sebelum halaman jalan: alamat dan kunci API dibaca sebelum config di-import.
+load_dotenv()
 st.set_page_config(
     page_title="Career Assistant",
     page_icon="💼",
