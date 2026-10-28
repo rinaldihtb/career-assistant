@@ -4,8 +4,6 @@ services:
     command: streamlit run src/app.py --server.address=0.0.0.0 --server.port=8501
     env_file:
       - .env
-    environment:
-      - ASSISTANT_API_URL=http://fastapi:8000
     depends_on:
       fastapi:
         condition: service_healthy
