@@ -1,39 +1,33 @@
-"""Set eval Cocokkan CV (tests/eval/cv_cases.yaml): pilih MatchConfig dengan gold per CV.
+"""Set eval Cocokkan CV (tests/eval/cv_cases.yaml): nilai ``MatchConfig()`` dengan gold per CV.
 
     make eval-cv ARGS="--label nama"      semua CV fiktif (butuh .env)
     make eval-cv ARGS="--only cv01"       sebagian CV (prefix ID)
     make eval-cv ARGS="--rescore tests/eval/results/<file>.json"
                                           hitung ulang dari kandidat tersimpan, tanpa API
 
-Biaya per CV: 1 panggilan LLM (profil), 2 embedding (ringkasan profil dan teks CV), 2 query
-Qdrant (k = ``MatchConfig().k``). Grid, kalibrasi, dan metrik dihitung di Python dari kandidat
-yang tersimpan, jadi menambah konfigurasi atau mengoreksi gold tidak menambah biaya API.
+Biaya per CV: 1 panggilan LLM (profil), 1 embedding (teks ``MatchConfig().query``), 1 query
+Qdrant (k = ``MatchConfig().k``). Metrik dihitung di Python dari kandidat tersimpan, jadi
+mengoreksi gold atau mengubah bobot skor bisa dinilai ulang dengan ``--rescore`` tanpa API.
 
 Alur per CV:
 1. ``extract_cv_text`` -> ``extract_cv_profile`` -> nilai profil terhadap gold (recall skill,
    skill yang dikarang, jenjang pendidikan, jumlah pengalaman) dan cek kutipan pencapaian
    terhadap teks CV (tanpa gold).
-2. Per vektor query: semua lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta
-   jumlah skill cocok/disebut. Yang disimpan hanya angka, ID, dan profil (CV-nya fiktif);
-   teks CV tidak disimpan.
-
-Analisis:
-1. Kalibrasi ``semantic_floor``/``semantic_ceiling`` per (query, aggregation) dari distribusi
-   cosine semua CV (lihat ``calibrate``). Dilakukan sebelum grid karena rentang ceiling - floor
-   ikut menentukan bobot efektif skor semantik terhadap skor skill, jadi ikut mengubah urutan.
-2. Grid query x aggregation x skill_prior x semantic_weight, ditambah pembanding "semantik
-   saja" (bobot 1.0) yang tidak ikut dipilih. Metrik: precision@5 dan @10 terhadap gold.
-3. Pilih: rata-rata p@5 tertinggi; seri -> rata-rata p@10, lalu p@5 terburuk per CV, lalu yang
-   paling dekat dengan default ``MatchConfig()`` (tanpa perubahan kode = paling sederhana).
+2. Semua lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta jumlah skill
+   cocok/disebut. Yang disimpan hanya angka, ID, dan profil (CV-nya fiktif); teks CV tidak
+   disimpan.
+3. Kandidat diurutkan dengan ``MatchConfig()``; metrik: precision@5 dan @10 terhadap gold,
+   skor teratas per CV (wajar di ``TOP_SCORE_RANGE``), dan lowongan non-gold yang belum dinilai.
 
 Urutan dihitung ulang dengan fungsi yang sama dengan ``rank_jobs`` (``scale_semantic``,
-``skill_score``, ``combine_score``); kesamaan urutannya dijaga test.
+``skill_score``, ``combine_score``); kesamaan urutannya dijaga test. Konfigurasi default
+dipilih dari grid query x agregasi x skill_prior x bobot semantik pada set ini: p@5 1,00 dan
+p@10 0,98, sama dengan konfigurasi terbaik grid, sehingga grid tidak lagi disimpan.
 """
 
 import argparse
 import hashlib
 import json
-import math
 import re
 import statistics
 import subprocess
@@ -74,12 +68,6 @@ TRACKED_FILES = (
     "src/agents/prompts.py",
     "src/evaluation/run_cv_eval.py",
 )
-QUERIES = ("profile", "cv_text")
-AGGREGATIONS = ("max", "mean")
-SKILL_PRIORS = (0.0, 1.0, 2.0, 3.0)
-SEMANTIC_WEIGHTS = (0.4, 0.5, 0.6, 0.7, 0.8)
-REFERENCE_WEIGHT = 1.0  # semantik saja: pembanding, tidak ikut dipilih
-CALIBRATION_STEP = 0.05
 TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu hasil
 DEFAULT = MatchConfig()
 CONFIG_FIELDS = {
@@ -90,7 +78,6 @@ CONFIG_FIELDS = {
     "semantic_floor",
     "semantic_ceiling",
 }
-SHOW_ROWS = 10
 TOP_N = 10
 
 
@@ -261,7 +248,8 @@ def collect_candidates(
     """Semua lowongan kandidat untuk satu vektor query: 1 query Qdrant, tanpa embedding/LLM.
 
     Filter chunk dan agregasi sama dengan ``rank_jobs``. Bedanya, semua kandidat disimpan
-    dengan kedua agregasi dan jumlah skill mentah, supaya grid bisa dihitung ulang tanpa API.
+    dengan kedua agregasi dan jumlah skill mentah, supaya ``--rescore`` tetap sahih jika
+    agregasi atau bobot di ``MatchConfig`` diubah.
 
     Returns:
         Daftar dict ``job_id``, ``max``, ``mean`` (cosine), ``matched``, ``required``
@@ -322,70 +310,7 @@ def precision_at(ranked_ids: Sequence[int], gold: set[int] | frozenset[int], n: 
     return sum(1 for job_id in ranked_ids[:n] if job_id in gold) / n
 
 
-def quantile(values: Sequence[float], q: float) -> float:
-    """Persentil dengan interpolasi linear: ``q=0.5`` median, ``q=1.0`` maksimum."""
-    ordered = sorted(values)
-    position = q * (len(ordered) - 1)
-    low, high = math.floor(position), math.ceil(position)
-    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
-
-
-def calibrate(
-    candidate_sets: Sequence[Sequence[Mapping[str, Any]]],
-    aggregation: str,
-    *,
-    step: float = CALIBRATION_STEP,
-) -> tuple[float, float]:
-    """Batas kalibrasi semantik dari distribusi cosine semua CV, kelipatan ``step``.
-
-    floor: median cosine kandidat terendah di antara CV, dibulatkan ke bawah. Untuk setiap CV,
-    setidaknya separuh lowongan kandidatnya mendapat skor semantik di atas 0%.
-    ceiling: cosine teratas tertinggi di antara CV, dibulatkan ke bawah. Lowongan terbaik CV
-    yang paling cocok mendapat skor semantik sekitar 100%.
-
-    Kelipatan 0,05 karena 5 CV tidak cukup untuk presisi 0,01. Aturan pertama (median gabungan
-    dan maksimum, presisi 0,01) pada set eval memberi [0.50, 0.71] dan skor
-    teratas cv04 66%, di luar 70-90%; aturan ini memberi [0.45, 0.70] dan 71-89% dengan
-    precision@5 dan @10 yang sama (1.00).
-    """
-    sets = [candidates for candidates in candidate_sets if candidates]
-    medians = [quantile([c[aggregation] for c in candidates], 0.5) for candidates in sets]
-    tops = [max(c[aggregation] for c in candidates) for candidates in sets]
-
-    def down(value: float) -> float:
-        # round(..., 6) dulu: 0.7 / 0.05 = 13.999999999999998 akan terbulatkan ke 13.
-        return round(math.floor(round(value / step, 6)) * step, 2)
-
-    floor = down(min(medians))
-    return floor, max(down(max(tops)), round(floor + step, 2))
-
-
-def grid_configs(
-    calibration: Mapping[str, tuple[float, float]],
-) -> list[tuple[MatchConfig, bool]]:
-    """Semua konfigurasi grid; ``True`` = boleh dipilih, ``False`` = pembanding semantik saja."""
-    configs: list[tuple[MatchConfig, bool]] = []
-    for query in QUERIES:
-        for aggregation in AGGREGATIONS:
-            floor, ceiling = calibration[f"{query}/{aggregation}"]
-            base = {
-                "query": query,
-                "aggregation": aggregation,
-                "semantic_floor": floor,
-                "semantic_ceiling": ceiling,
-            }
-            for prior in SKILL_PRIORS:
-                for weight in SEMANTIC_WEIGHTS:
-                    config = MatchConfig(**base, skill_prior=prior, semantic_weight=weight)
-                    configs.append((config, True))
-            reference = MatchConfig(**base, semantic_weight=REFERENCE_WEIGHT)
-            configs.append((reference, False))
-    return configs
-
-
-def evaluate_config(
-    config: MatchConfig, runs: Sequence[Mapping[str, Any]], *, selectable: bool = True
-) -> dict[str, Any]:
+def evaluate_config(config: MatchConfig, runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Precision@5, precision@10, dan skor teratas per CV untuk satu konfigurasi.
 
     Args:
@@ -402,7 +327,6 @@ def evaluate_config(
         top[run["id"]] = round(ranked[0][1], 4) if ranked else None
     return {
         "config": config.model_dump(include=CONFIG_FIELDS),
-        "selectable": selectable,
         "p5": p5,
         "p10": p10,
         "mean_p5": round(statistics.mean(p5.values()), 4),
@@ -412,41 +336,17 @@ def evaluate_config(
     }
 
 
-def choose_config(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    """Pilih baris grid: p@5 rata-rata tertinggi, lalu p@10 rata-rata, lalu p@5 terburuk,
-    lalu yang paling dekat dengan default ``MatchConfig()``.
-
-    "Paling dekat dengan default" dipakai sebagai ukuran "paling sederhana": konfigurasi yang
-    sama dengan default tidak butuh perubahan kode. Urutan kedekatan: query, aggregation,
-    selisih skill_prior, selisih semantic_weight.
-    """
-
-    def key(row: Mapping[str, Any]) -> tuple:
-        config = row["config"]
-        return (
-            -row["mean_p5"],
-            -row["mean_p10"],
-            -row["min_p5"],
-            config["query"] != DEFAULT.query,
-            config["aggregation"] != DEFAULT.aggregation,
-            abs(config["skill_prior"] - DEFAULT.skill_prior),
-            abs(config["semantic_weight"] - DEFAULT.semantic_weight),
-        )
-
-    return min((row for row in rows if row["selectable"]), key=key)
-
-
 def analyze(
     records: Sequence[Mapping[str, Any]],
     titles: Mapping[int, str],
+    config: MatchConfig = DEFAULT,
 ) -> dict[str, Any]:
-    """Kalibrasi, grid, dan pilihan konfigurasi dari record yang punya kandidat; tanpa API.
+    """Metrik ``config`` dari record yang punya kandidat, ditambah ringkasan profil; tanpa API.
 
     Returns:
-        Ringkasan untuk JSON: ``calibration``, ``grid`` (semua baris), ``chosen``,
-        ``current_default`` (default sekarang apa adanya), ``top`` (``TOP_N`` teratas per CV
-        untuk konfigurasi terpilih), ``out_of_range`` (CV dengan skor teratas di luar
-        ``TOP_SCORE_RANGE``), dan ringkasan profil.
+        Ringkasan untuk JSON: hasil ``evaluate_config`` (``config``, p@5, p@10, skor teratas),
+        ``top`` (``TOP_N`` teratas per CV), ``out_of_range`` (CV dengan skor teratas di luar
+        ``TOP_SCORE_RANGE``), ``unjudged`` (non-gold yang belum dinilai), dan ringkasan profil.
     """
     runs = [
         {
@@ -456,27 +356,16 @@ def analyze(
             "candidates": r["candidates"],
         }
         for r in records
-        if not r.get("error") and set(QUERIES) <= set(r.get("candidates") or {})
+        if not r.get("error") and config.query in (r.get("candidates") or {})
     ]
     if not runs:
-        return {"error": "Tidak ada CV dengan kandidat lengkap"}
+        return {"error": "Tidak ada CV dengan kandidat"}
 
-    calibration = {
-        f"{query}/{aggregation}": calibrate([run["candidates"][query] for run in runs], aggregation)
-        for query in QUERIES
-        for aggregation in AGGREGATIONS
-    }
-    grid = [
-        evaluate_config(config, runs, selectable=selectable)
-        for config, selectable in grid_configs(calibration)
-    ]
-    chosen = choose_config(grid)
-    chosen_config = MatchConfig(**chosen["config"])
+    result = evaluate_config(config, runs)
     low, high = TOP_SCORE_RANGE
-
     top = {}
     for run in runs:
-        ranked = rank_candidates(run["candidates"][chosen_config.query], chosen_config)
+        ranked = rank_candidates(run["candidates"][config.query], config)
         top[run["id"]] = [
             {
                 "job_id": job_id,
@@ -492,16 +381,10 @@ def analyze(
     return {
         "cases": len(records),
         "cases_scored": len(runs),
-        "calibration_step": CALIBRATION_STEP,
-        "calibration": {
-            name: {"floor": floor, "ceiling": ceiling}
-            for name, (floor, ceiling) in calibration.items()
-        },
-        "chosen": chosen,
-        "current_default": evaluate_config(DEFAULT, runs, selectable=False),
+        **result,
         "out_of_range": [
             cv_id
-            for cv_id, score in chosen["top_score"].items()
+            for cv_id, score in result["top_score"].items()
             if score is None or not low <= score <= high
         ],
         "top": top,
@@ -524,7 +407,6 @@ def analyze(
             for item in r["profile_check"].values()
         ),
         "profile_fields": sum(len(r["profile_check"]) for r in checked),
-        "grid": grid,
     }
 
 
@@ -576,24 +458,22 @@ def run_case(
     # Nama dan kontak tidak dinilai eval, jadi tidak ditulis ke JSON hasil.
     record["profile"] = profile.model_dump(mode="json", exclude={"full_name", "contacts"})
 
-    texts = {"profile": profile_query_text(profile), "cv_text": cv.text}
-    record["query_chars"] = {name: len(text) for name, text in texts.items()}
-    cv_skills = build_cv_skills(profile.skills)
-    record["candidates"] = {}
-    record["seconds"] = {}
+    text = profile_query_text(profile) if DEFAULT.query == "profile" else cv.text
+    record["query_chars"] = len(text)
     try:
         index = load_job_skill_index(str(Path(db_path).resolve()))
-        for name, text in texts.items():
-            started = time.perf_counter()
-            vector = embeddings.embed_query(text)
-            embedded = time.perf_counter()
-            record["candidates"][name] = collect_candidates(
-                vector, cv_skills, vector_store=vector_store, index=index
+        started = time.perf_counter()
+        vector = embeddings.embed_query(text)
+        embedded = time.perf_counter()
+        record["candidates"] = {
+            DEFAULT.query: collect_candidates(
+                vector, build_cv_skills(profile.skills), vector_store=vector_store, index=index
             )
-            record["seconds"][name] = {
-                "embed": round(embedded - started, 2),
-                "search": round(time.perf_counter() - embedded, 2),
-            }
+        }
+        record["seconds"] = {
+            "embed": round(embedded - started, 2),
+            "search": round(time.perf_counter() - embedded, 2),
+        }
     except Exception as exc:  # noqa: BLE001 - error provider embedding/Qdrant beragam
         record["error"] = f"Embedding/Qdrant error: {exc}"
     return record, cv.text
@@ -631,17 +511,9 @@ def run_metadata(label: str, started: datetime, cases_path: Path) -> dict[str, A
 
 def _config_label(config: Mapping[str, Any]) -> str:
     return (
-        f"{config['query']:<7} {config['aggregation']:<4} prior {config['skill_prior']:g} "
+        f"{config['query']} {config['aggregation']} prior {config['skill_prior']:g} "
         f"w {config['semantic_weight']:.1f} [{config['semantic_floor']:.2f}-"
         f"{config['semantic_ceiling']:.2f}]"
-    )
-
-
-def _row_line(row: Mapping[str, Any]) -> str:
-    per_cv = " ".join(f"{cv_id} {value:.1f}" for cv_id, value in row["p5"].items())
-    return (
-        f"{_config_label(row['config'])}  p@5 {row['mean_p5']:.2f}  p@10 {row['mean_p10']:.2f}  "
-        f"min p@5 {row['min_p5']:.1f} | {per_cv}"
     )
 
 
@@ -686,7 +558,7 @@ def print_record(record: Mapping[str, Any]) -> None:
 
 
 def print_summary(summary: Mapping[str, Any]) -> None:
-    """Kalibrasi, baris grid teratas, pembanding, konfigurasi terpilih, dan top-N per CV."""
+    """Ringkasan profil, metrik ``MatchConfig()``, peringatan, dan top-N per CV."""
     print("\n" + "=" * 70)
     if summary.get("error"):
         print(summary["error"])
@@ -698,32 +570,14 @@ def print_summary(summary: Mapping[str, Any]) -> None:
         f"pencapaian {summary.get('achievements', 0)} "
         f"(tidak persis {summary.get('achievements_not_verbatim', 0)})"
     )
+    print(f"\nMatchConfig(): {_config_label(summary['config'])}")
     print(
-        "\nKalibrasi (floor = median kandidat terendah antar-CV, ceiling = cosine teratas "
-        f"tertinggi; kelipatan {summary['calibration_step']:g} ke bawah):"
+        f"  p@5 {summary['mean_p5']:.2f}  p@10 {summary['mean_p10']:.2f}  "
+        f"min p@5 {summary['min_p5']:.1f}"
     )
-    for name, bounds in summary["calibration"].items():
-        print(f"  {name:<15} floor {bounds['floor']:.2f}  ceiling {bounds['ceiling']:.2f}")
-
-    grid = summary["grid"]
-    selectable = [row for row in grid if row["selectable"]]
-    ordered = sorted(
-        selectable, key=lambda row: (-row["mean_p5"], -row["mean_p10"], -row["min_p5"])
-    )
-    print(f"\nGrid: {SHOW_ROWS} teratas dari {len(selectable)}")
-    for row in ordered[:SHOW_ROWS]:
-        print("  " + _row_line(row))
-    print("Pembanding semantik saja (w=1.0):")
-    for row in grid:
-        if not row["selectable"]:
-            print("  " + _row_line(row))
-    print("Default sekarang (MatchConfig()):")
-    print("  " + _row_line(summary["current_default"]))
-
-    chosen = summary["chosen"]
-    print("\nTERPILIH: " + _row_line(chosen))
-    print("  p@10 per CV: " + " ".join(f"{k} {v:.1f}" for k, v in chosen["p10"].items()))
-    print("  skor teratas: " + " ".join(f"{k} {v:.0%}" for k, v in chosen["top_score"].items()))
+    print("  p@5 per CV: " + " ".join(f"{k} {v:.1f}" for k, v in summary["p5"].items()))
+    print("  p@10 per CV: " + " ".join(f"{k} {v:.1f}" for k, v in summary["p10"].items()))
+    print("  skor teratas: " + " ".join(f"{k} {v:.0%}" for k, v in summary["top_score"].items()))
     low, high = TOP_SCORE_RANGE
     if summary["out_of_range"]:
         print(f"  PERINGATAN skor teratas di luar {low:.0%}-{high:.0%}: {summary['out_of_range']}")

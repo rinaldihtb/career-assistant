@@ -1,5 +1,5 @@
-"""Test set eval Cocokkan CV: penilaian profil, gold, kalibrasi, grid, isi set eval, dan
-kesamaan urutan dengan ``rank_jobs``. Tanpa API.
+"""Test set eval Cocokkan CV: penilaian profil, gold, metrik ``MatchConfig()``, isi set eval,
+dan kesamaan urutan dengan ``rank_jobs``. Tanpa API.
 """
 
 import json
@@ -14,25 +14,18 @@ from src.cv.pdf_text import extract_cv_text
 from src.cv.profile import Achievement, CVProfile, CVProfileResult, Experience
 from src.cv.skills import build_cv_skills
 from src.evaluation.run_cv_eval import (
-    AGGREGATIONS,
     CASES_PATH,
-    QUERIES,
-    SEMANTIC_WEIGHTS,
-    SKILL_PRIORS,
     TOP_N,
     analyze,
-    calibrate,
     check_achievements,
     check_profile,
     check_skills,
-    choose_config,
     collect_candidates,
     evaluate_config,
     gold_job_ids,
     load_cases,
     load_titles,
     precision_at,
-    quantile,
     rank_candidates,
     run_case,
     same_skill,
@@ -96,25 +89,6 @@ def candidate(job_id, cos, matched=0, required=0, mean=None):
     }
 
 
-def row(mean_p5, mean_p10, min_p5, *, selectable=True, **config):
-    base = {
-        "query": "profile",
-        "aggregation": "max",
-        "skill_prior": 2.0,
-        "semantic_weight": 0.6,
-        "semantic_floor": 0.25,
-        "semantic_ceiling": 0.65,
-    }
-    base.update(config)
-    return {
-        "config": base,
-        "selectable": selectable,
-        "mean_p5": mean_p5,
-        "mean_p10": mean_p10,
-        "min_p5": min_p5,
-    }
-
-
 # ------------------------------------------------------------------ kandidat dan urutan
 
 
@@ -144,7 +118,7 @@ def test_collect_candidates_filters_like_rank_jobs(jobs_db):
     ],
 )
 def test_rank_candidates_matches_rank_jobs(jobs_db, config):
-    """Grid hanya sahih jika urutan hitung ulang sama persis dengan aplikasi."""
+    """Metrik eval hanya sahih jika urutan hitung ulang sama persis dengan aplikasi."""
     cv_skills = build_cv_skills(["Python", "SQL"])
     index = load_job_skill_index(str(jobs_db.resolve()))
     candidates = collect_candidates(
@@ -174,7 +148,7 @@ def fake_profile(monkeypatch, profile):
     return calls
 
 
-def test_run_case_one_llm_two_embeddings_two_searches(monkeypatch, jobs_db):
+def test_run_case_one_llm_one_embedding_one_search(monkeypatch, jobs_db):
     llm_calls = fake_profile(
         monkeypatch,
         CVProfile(
@@ -194,9 +168,10 @@ def test_run_case_one_llm_two_embeddings_two_searches(monkeypatch, jobs_db):
 
     assert record["error"] is None
     assert len(llm_calls) == 1
-    assert embeddings.texts == ["Data Analyst\nSkills: Python, SQL", cv_text]
-    assert store.calls == 2
-    assert set(record["candidates"]) == {"profile", "cv_text"}
+    assert embeddings.texts == ["Data Analyst\nSkills: Python, SQL"]
+    assert store.calls == 1
+    assert set(record["candidates"]) == {"profile"}
+    assert "Dokumen fiktif" in cv_text  # teks CV dikembalikan untuk penilaian
     assert "Dokumen fiktif" not in json.dumps(record)  # teks CV tidak ikut disimpan
     assert "Nama Fiktif" not in json.dumps(record)
     assert "0812-0000-0000" not in json.dumps(record)
@@ -317,25 +292,7 @@ def test_check_achievements_flags_changed_numbers_translation_and_unknown_contex
     assert result["context_unknown"] == 1  # "Supervisor" tidak ada di teks CV
 
 
-# ------------------------------------------------------------------ kalibrasi dan pilihan
-
-
-def test_quantile_interpolates():
-    assert quantile([4, 1, 3, 2], 0.5) == pytest.approx(2.5)
-    assert quantile([4, 1, 3, 2], 1.0) == 4
-    assert quantile([4, 1, 3, 2], 0.0) == 1
-
-
-def test_calibrate_lowest_median_and_highest_top_rounded_down():
-    sets = [
-        [candidate(1, 0.40), candidate(2, 0.52), candidate(3, 0.707)],  # median 0.52
-        [candidate(4, 0.45), candidate(5, 0.494), candidate(6, 0.66)],  # median 0.494
-        [],
-    ]
-    assert calibrate(sets, "max") == (0.45, 0.70)
-    assert calibrate(sets, "max", step=0.01) == (0.49, 0.70)
-    assert calibrate([[candidate(1, 0.70)]], "max") == (0.70, 0.75)  # ceiling > floor
-    assert calibrate([[candidate(1, 0.30)], [candidate(2, 0.35)]], "max") == (0.30, 0.35)
+# ------------------------------------------------------------------ metrik
 
 
 def test_evaluate_config_precision_and_top_score():
@@ -348,19 +305,6 @@ def test_evaluate_config_precision_and_top_score():
     assert result["top_score"]["cv01"] == pytest.approx(0.95)
 
 
-def test_choose_config_tie_breaks_then_prefers_default():
-    rows = [
-        row(0.9, 0.9, 0.8, selectable=False),  # pembanding tidak ikut dipilih
-        row(0.8, 0.7, 0.6),
-        row(0.8, 0.8, 0.4, skill_prior=0.0),
-        row(0.8, 0.8, 0.4, semantic_weight=0.7),
-        row(0.8, 0.8, 0.4, aggregation="mean"),
-    ]
-    assert choose_config(rows)["config"]["semantic_weight"] == 0.7
-    rows.append(row(0.8, 0.8, 0.6, query="cv_text"))
-    assert choose_config(rows)["config"]["query"] == "cv_text"  # p@5 terburuk lebih tinggi
-
-
 def test_analyze_end_to_end_without_api():
     def record(cv_id, gold, shift):
         cands = [
@@ -370,7 +314,7 @@ def test_analyze_end_to_end_without_api():
             "id": cv_id,
             "error": None,
             "gold_ids": gold,
-            "candidates": {"profile": cands, "cv_text": cands[::-1]},
+            "candidates": {"profile": cands},
             "skills_check": {"recall": 1.0, "invented": []},
             "profile_check": {"experiences": {"expected": 2, "actual": 2}},
         }
@@ -384,10 +328,8 @@ def test_analyze_end_to_end_without_api():
     summary = analyze(records, titles)
 
     assert summary["cases_scored"] == 2
-    assert set(summary["calibration"]) == {f"{q}/{a}" for q in QUERIES for a in AGGREGATIONS}
-    per_query = len(SKILL_PRIORS) * len(SEMANTIC_WEIGHTS) + 1
-    assert len(summary["grid"]) == len(QUERIES) * len(AGGREGATIONS) * per_query
-    assert summary["chosen"]["selectable"] is True
+    assert summary["config"] == MatchConfig().model_dump(include=set(summary["config"]))
+    assert set(summary["p5"]) == {"cv01", "cv02"}
     assert len(summary["top"]["cv01"]) == TOP_N
     assert summary["top"]["cv01"][0]["title"].startswith("Job")
     assert summary["profile_fields_ok"] == 2
@@ -402,7 +344,7 @@ def test_analyze_marks_judged_non_gold():
         "error": None,
         "gold_ids": [1, 2, 3, 4, 5, 6, 7, 8],
         "not_relevant_ids": [9, 10],
-        "candidates": {"profile": cands, "cv_text": cands},
+        "candidates": {"profile": cands},
     }
     summary = analyze([record], {})
     assert summary["unjudged"] == {}
