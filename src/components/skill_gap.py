@@ -30,6 +30,7 @@ from src.cv.gap import SkillCount, SkillGap, compute_skill_gap
 from src.cv.ingest import CV_STATE_KEY
 from src.cv.match import MatchResult
 from src.cv.plan import LearningPlanResult, PlanWeek, generate_learning_plan, plan_to_markdown
+from src.helpers.format import format_usage
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ def _render_plan(state: dict[str, Any], gap: SkillGap) -> None:
             type="primary",
             key="gap_download",
         )
+        st.caption(plan_usage_caption(cached))
 
 
 def _generate(state: dict[str, Any], gap: SkillGap) -> None:
@@ -189,3 +191,8 @@ def gap_caption(gap: SkillGap) -> str:
 def week_label(number: int, week: PlanWeek) -> str:
     """Label checkbox minggu, misalnya "Minggu 1 — Power BI dasar"."""
     return f"Minggu {number} — {escape_markdown(week.title)}"
+
+
+def plan_usage_caption(result: LearningPlanResult) -> str:
+    """Biaya rencana yang sudah dibuat untuk versi profil ini."""
+    return f"Biaya rencana ini: {format_usage(result.usage)}."

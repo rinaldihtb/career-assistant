@@ -25,6 +25,7 @@ from src.components.skill_gap import (
     cached_plan,
     count_label,
     gap_caption,
+    plan_usage_caption,
     week_label,
 )
 from src.cv.gap import SkillCount, compute_skill_gap
@@ -78,6 +79,7 @@ def state(**overrides) -> dict:
         "file_name": "cv_nadia.pdf",
         "file_size": 120_000,
         "pages": 1,
+        "usage": LLMUsage(llm_calls=1),
         "embedding_calls": 1,
     }
     data.update(overrides)
@@ -183,6 +185,7 @@ def test_plan_calls_llm_once_and_is_cached_for_the_version(plans):
     assert [box.label for box in app.checkbox] == [f"Minggu {n} — Fokus {n}" for n in range(1, 5)]
     assert "- Tugas 1a\n- Tugas 1b" in _captions(app)
     assert app.download_button(key="gap_download").proto.label == "Unduh rencana (.md)"
+    assert plan_usage_caption(plans["reply"]) in _captions(app)
 
     app.checkbox(key="gap_week_1_1").check().run()
     assert len(plans["calls"]) == 1  # rerun tidak memanggil LLM lagi

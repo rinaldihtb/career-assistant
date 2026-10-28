@@ -57,6 +57,8 @@ RAG_RESULT = AgentResult(
     ],
     usage=LLMUsage(
         llm_calls=2,
+        input_tokens=2150,
+        output_tokens=250,
         total_tokens=2400,
         calls=[
             LLMCall(step="planner", model="gpt-4o-mini-2024-07-18", input_tokens=550,
@@ -174,6 +176,28 @@ def test_rag_answer_shows_uniform_card_with_reason(calls):
         "messages": [{"role": "user", "content": "Lowongan data analyst di Jakarta"}],
         "profile": None,
         "matches": None,
+    }
+
+
+def test_llm_usage_detail_per_call(calls):
+    app = _app()
+    app.chat_input[0].set_value("Lowongan data analyst di Jakarta").run()
+
+    assert app.expander[-1].label.startswith(
+        "Detail: Pencarian lowongan (RAG) | 2 panggilan LLM (gpt-4o-mini-2024-07-18) · "
+        "2.150 token masuk, 250 keluar · $0.000472 | "
+    )
+    usage_table = app.dataframe[-1].value.to_dict("records")
+    assert [row["Langkah"] for row in usage_table] == [
+        "Planner: pecah pertanyaan",
+        "RAG: jawab dari kandidat",
+    ]
+    assert usage_table[1] == {
+        "Langkah": "RAG: jawab dari kandidat",
+        "Model": "gpt-4o-mini-2024-07-18",
+        "Token masuk": 1600,
+        "Token keluar": 220,
+        "Biaya": "$0.000372",
     }
 
 
@@ -410,6 +434,7 @@ def test_sql_job_list_renders_cards_and_table(monkeypatch, make_repository):
     assert [{"id": 4, "salary_max": 20_000_000}, {"id": 1, "salary_max": 10_000_000}] in [
         table.value.to_dict("records") for table in app.dataframe
     ]
+    assert app.expander[-1].label.startswith("Detail: Statistik data (SQL)")
 
 
 def test_dollar_sign_in_answer_is_not_latex(monkeypatch):
@@ -444,7 +469,7 @@ def test_prepare_display_multi_builds_display_per_part(repository):
     assert display.parts[1].text == "**Lowongan data analyst**\nAda satu:"
 
 
-def test_multi_answer_renders_every_part(monkeypatch):
+def test_multi_answer_renders_every_part_and_one_usage_panel(monkeypatch):
     _use(monkeypatch, MULTI_RESULT)
     app = _app()
     app.chat_input[0].set_value("Rata-rata gaji dan lowongan data analyst").run()
@@ -457,6 +482,9 @@ def test_multi_answer_renders_every_part(monkeypatch):
     assert "**Kenapa cocok:** cocok." in texts
     assert "Catatan: sebagian permintaan tidak dijalankan." in texts
     assert [{"rata": 4_175_000, "n": 4}] in [t.value.to_dict("records") for t in app.dataframe]
+    usage_panels = [e.label for e in app.expander if e.label.startswith("Detail:")]
+    assert len(usage_panels) == 1
+    assert usage_panels[0].startswith("Detail: Gabungan beberapa agent | 4 panggilan LLM")
 
 
 # --- CV aktif ------------------------------------------------------------------
@@ -542,6 +570,7 @@ def test_cv_answer_shows_cards_with_match_note(monkeypatch, make_repository):
     texts = [md.value for md in app.markdown]
     assert "**Kecocokan:** 81% cocok · skill cocok: SQL" in texts
     assert "**Marketing Manager**  \nPT Delta" in texts
+    assert app.expander[-1].label.startswith("Detail: Hasil Cocokkan CV | 0 panggilan LLM")
 
 
 @pytest.mark.parametrize(

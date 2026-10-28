@@ -47,6 +47,7 @@ from src.cv.letter import (
 from src.cv.letter_file import letter_to_docx, letter_to_pdf
 from src.cv.match import JobMatch
 from src.cv.profile import CVProfile
+from src.helpers.format import format_usage
 from src.repositories.job_repository import get_jobs_by_ids, sqlite_path
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ def _render_fit(match: JobMatch) -> None:
 
 
 def _render_letter(state: dict[str, Any], match: JobMatch, description: str | None) -> None:
-    """Surat yang bisa diedit (kiri) dan pengaturan serta unduh (kanan).
+    """Surat yang bisa diedit (kiri) dan pengaturan, unduh, serta biaya (kanan).
 
     Tanpa surat untuk versi profil ini, surat dibuat dulu (1 LLM) dengan pengaturan aktif.
     """
@@ -311,9 +312,12 @@ def contact_line(profile: CVProfile) -> str:
 
 
 def letter_caption(entry: dict[str, Any]) -> str:
-    """Pengaturan surat yang sedang tampil."""
+    """Pengaturan dan biaya surat yang sedang tampil."""
     settings: LetterSettings = entry["settings"]
-    return f"{LANGUAGE_NAMES[settings.language]} · {LENGTH_LABELS[settings.words]}."
+    return (
+        f"{LANGUAGE_NAMES[settings.language]} · {LENGTH_LABELS[settings.words]} · "
+        f"{format_usage(entry['result'].usage)}."
+    )
 
 
 def _author(full_name: str | None) -> str:

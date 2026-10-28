@@ -8,6 +8,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# Harga standar OpenAI dalam USD per 1 juta token: (input, output). Nama model dari API memuat
+# tanggal snapshot ("gpt-4o-mini-2024-07-18"), jadi dicocokkan dengan awalan.
+MODEL_PRICES_USD = {"gpt-4o-mini": (0.15, 0.60)}
+
 
 class LLMCall(BaseModel):
     """Satu panggilan LLM: langkah mana, model apa, dan berapa token."""
@@ -17,6 +21,14 @@ class LLMCall(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+
+    @property
+    def cost_usd(self) -> float | None:
+        """Biaya panggilan ini dari ``MODEL_PRICES_USD``; ``None`` jika harga model tidak ada."""
+        for name, (input_price, output_price) in MODEL_PRICES_USD.items():
+            if self.model.startswith(name):
+                return (self.input_tokens * input_price + self.output_tokens * output_price) / 1e6
+        return None
 
 
 class LLMUsage(BaseModel):
@@ -31,6 +43,14 @@ class LLMUsage(BaseModel):
     output_tokens: int = 0
     total_tokens: int = 0
     calls: list[LLMCall] = Field(default_factory=list)
+
+    @property
+    def cost_usd(self) -> float | None:
+        """Total biaya semua panggilan; ``None`` jika ada model tanpa harga atau rincian kurang."""
+        costs = [call.cost_usd for call in self.calls]
+        if None in costs or len(costs) != self.llm_calls:
+            return None
+        return sum(costs)
 
     def add(self, message: Any, step: str = "llm") -> None:
         """Catat satu panggilan LLM dari pesan balasan model.

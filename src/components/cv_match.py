@@ -23,7 +23,7 @@ from src.containers import traced_llm
 from src.cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
 from src.cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
 from src.cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
-from src.helpers.format import format_salary
+from src.helpers.format import format_salary, format_usage
 from src.repositories.job_repository import get_jobs_by_ids, sqlite_path
 
 logger = logging.getLogger(__name__)
@@ -217,6 +217,7 @@ def _render_profile_panel(state: dict[str, Any]) -> None:
             skills=skills,
         )
         _apply_edits(state, edited)
+    st.caption(usage_caption(st.session_state[CV_STATE_KEY]))
 
 
 def _apply_edits(state: dict[str, Any], edited: CVProfile) -> None:
@@ -343,6 +344,7 @@ def new_cv_state(
         "file_name": file_name,
         "file_size": file_size,
         "pages": ingest.pages,
+        "usage": ingest.usage,
         "embedding_calls": matches.embedding_calls,
     }
 
@@ -430,6 +432,14 @@ def size_label(size: int) -> str:
     if size < 1024 * 1024:
         return f"{max(1, round(size / 1024))} KB"
     return f"{size / (1024 * 1024):.1f} MB".replace(".", ",")
+
+
+def usage_caption(state: dict[str, Any]) -> str:
+    """Biaya yang sudah dipakai CV ini: LLM saat membaca, embedding saat mencocokkan."""
+    return (
+        f"Biaya membaca CV: {format_usage(state['usage'])} · {state['embedding_calls']} "
+        f"embedding untuk mencocokkan · versi profil {state['version']}."
+    )
 
 
 def _clean(text: str | None) -> str | None:
