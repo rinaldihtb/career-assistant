@@ -439,6 +439,15 @@ DATA_SOURCE_MESSAGE = (
 DATA_FAILED_MESSAGE = (
     "Maaf, data lowongan tidak bisa dibaca saat ini. Coba lagi beberapa saat lagi."
 )
+# Detail satu lowongan ber-ID (``job_detail``) langsung dari SQLite. Baris ``[ID:x]`` membuat UI
+# menampilkan kartu lowongan dengan deskripsi lengkapnya.
+JOB_DETAIL_ANSWER = (
+    "Lowongan dengan ID {id}:\n- [ID:{id}] {title} - {company} ({location}): deskripsi lengkap "
+    "ada di bawah."
+)
+JOB_DETAIL_MISSING = "Lowongan dengan ID {id} tidak ada di data kami."
+# Pertanyaan rag untuk pesan yang isinya persis judul lowongan di database.
+JOB_TITLE_QUESTION = "Lowongan {title}"
 
 # ---------------------------------------------------------------------------
 # Profil CV (cv/profile.py, 1 panggilan LLM structured output; bukan agent)

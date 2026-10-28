@@ -122,6 +122,11 @@ class JobRepository:
 
         return locations
 
+    def get_job_titles(self) -> list[str]:
+        """Ambil judul lowongan yang berbeda, untuk mengenali pesan berisi judul saja."""
+        rows = self.db._execute("SELECT DISTINCT job_title FROM jobs WHERE job_title IS NOT NULL")
+        return [row["job_title"] for row in rows]
+
     def get_job_listings(self) -> list[dict[str, Any]]:
         """Kolom daftar dan deskripsi semua lowongan, urut ID, untuk halaman Cari Lowongan.
 

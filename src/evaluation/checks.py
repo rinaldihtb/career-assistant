@@ -36,6 +36,7 @@ AGENT_LLM_BUDGET = {
     "cv_role": 0,
     "skill_stats": 0,
     "data_source": 0,
+    "job_detail": 0,
 }
 
 

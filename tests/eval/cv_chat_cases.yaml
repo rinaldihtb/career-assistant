@@ -39,6 +39,12 @@
 #    hasil Cocokkan CV per posisi dan kota belum ada.
 # K12 (v1.6) Pertanyaan lanjutan tentang asal data jawaban ("referensi/sumber informasi ini
 #    dari mana") -> data_source: pesan tetap tentang data lowongan aplikasi, tanpa planner.
+# K13 (v1.7) Detail atau deskripsi tepat satu ID lowongan -> job_detail: lowongan dibaca dari
+#    SQLite tanpa planner dan tanpa LLM, juga tanpa CV. Lewat planner dan SQL, generator SQL
+#    membalas TIDAK_RELEVAN (8 dari 8 run) dan planner tanpa CV membalas refuse (4 dari 4 run).
+#    Pesan yang isinya persis judul lowongan ("General Ledger Specialist") -> rag untuk judul
+#    itu tanpa planner; lewat planner jawabannya out_of_scope atau cv_role (0 dari 8 run benar).
+#    Setelah jawaban yang menampilkan lowongan berjudul sama, sql dengan ID-nya juga sah.
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
@@ -51,7 +57,7 @@
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.6"
+version: "1.7"
 profiles: tests/eval/cv_chat_profiles.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -444,3 +450,59 @@ cases:
       - {role: assistant, content: "Skill yang paling sering disebut di 473 lowongan: ..."}
     question: Sumber data jawaban tadi dari mana?
     expected: {agents: [data_source]}
+
+  # --- C15: detail lowongan ber-ID dan nama posisi saja (K13) -------------------------
+  - id: C15-01
+    category: C15
+    cv: cv05
+    history:
+      - {role: user, content: "saya ingin switch career menjadi accountant, skill apa yang perlu saya pelajari?"}
+      - {role: assistant, content: "Untuk posisi Accountant: dari 10 lowongan yang paling mirip dengan posisi itu, skill yang paling sering diminta dan belum ada di CV-mu:\n- Forecasting: 7 dari 10 lowongan (ID 471, 457, 442, 453, 420, 468, 472)\n\nContoh 5 lowongan teratas untuk posisi Accountant:\n- [ID:471] General Ledger Specialist - Pengiklan Anonim (Jakarta Selatan, Jakarta Raya)"}
+    question: deskripsi lengkapnya lowongan dengan id 471
+    expected: {agents: [job_detail]}
+    checks:
+      standalone_all: [["471"]]
+      answer_any: [General Ledger Specialist]
+
+  - id: C15-02
+    category: C15
+    cv: cv05
+    question: Tampilkan deskripsi lengkap lowongan ID 471
+    expected: {agents: [job_detail]}
+    checks:
+      standalone_all: [["471"]]
+      answer_any: [General Ledger Specialist]
+
+  - id: C15-03
+    category: C15
+    cv: null
+    question: Tampilkan deskripsi lengkap lowongan ID 471
+    expected: {agents: [job_detail]}
+    checks:
+      standalone_all: [["471"]]
+      answer_any: [General Ledger Specialist]
+
+  - id: C15-04
+    category: C15
+    cv: cv05
+    history:
+      - {role: user, content: "saya ingin switch career menjadi accountant, skill apa yang perlu saya pelajari?"}
+      - {role: assistant, content: "Untuk posisi Accountant: dari 10 lowongan yang paling mirip dengan posisi itu, skill yang paling sering diminta dan belum ada di CV-mu:\n- Forecasting: 7 dari 10 lowongan (ID 471, 457, 442, 453, 420, 468, 472)\n\nContoh 5 lowongan teratas untuk posisi Accountant:\n- [ID:471] General Ledger Specialist - Pengiklan Anonim (Jakarta Selatan, Jakarta Raya)"}
+    question: General Ledger Specialist
+    expected: {agents: [rag], agents_alt: [[sql]]}
+    checks:
+      standalone_any: [general ledger, "471"]
+
+  - id: C15-05
+    category: C15
+    cv: cv05
+    question: General Ledger Specialist
+    expected: {agents: [rag]}
+    checks:
+      standalone_any: [general ledger]
+
+  - id: C15-06
+    category: C15
+    cv: null
+    question: General Ledger Specialist
+    expected: {agents: [rag], agents_alt: [[]], response_alt: [clarify]}

@@ -20,8 +20,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from pydantic import BaseModel
 
-from src.agents.cv_agent import run_cv_agent, run_data_agent
+from src.agents.cv_agent import run_cv_agent, run_data_agent, run_job_detail
 from src.agents.prompts import (
+    JOB_TITLE_QUESTION,
     SUPERVISOR_CHAT_CV_NOTE,
     SUPERVISOR_CHAT_SYSTEM,
     SUPERVISOR_CHAT_USER,
@@ -67,6 +68,7 @@ AGENT_NODES = {
     "cv_role": "cv_agent",
     "skill_stats": "cv_agent",
     "data_source": "cv_agent",
+    "job_detail": "cv_agent",
 }
 # CV fiktif dengan skill terbanyak di set eval punya 15 skill; profil ringkas tetap < 150 token.
 MAX_PROFILE_SKILLS = 15
@@ -119,6 +121,15 @@ _SOURCE_QUESTION = re.compile(
     r"\breferensi\b|\bsumber(?!\s+daya)\w*\b"
     r"|\bdari\s*mana\b.*\b(?:informasi|jawaban|datanya|data\s+(?:ini|itu|tersebut))\b"
     r"|\b(?:informasi|jawaban|datanya|data\s+(?:ini|itu|tersebut))\b.*\bdari\s*mana\b",
+    re.IGNORECASE,
+)
+# Detail atau deskripsi satu lowongan ber-ID. Generator SQL membalas TIDAK_RELEVAN untuk
+# "deskripsi lengkap lowongan ID 471" (C15-01, C15-02: 8 dari 8 run) dan planner tanpa CV
+# membalas refuse (C15-03: 4 dari 4 run); lowongannya dibaca langsung dari SQLite.
+_JOB_ID = re.compile(r"\bid\s*[:#]?\s*(\d+)\b", re.IGNORECASE)
+_DETAIL_REQUEST = re.compile(
+    r"\b(?:deskripsi\w*|detail\w*|rincian\w*|kualifikasi|persyaratan|syarat\w*"
+    r"|tanggung\s+jawab|job\s*desc\w*|jobdesk\w*)\b",
     re.IGNORECASE,
 )
 # Pindah karier tanpa posisi tujuan; planner menjawabnya cv_match di C13-01 (1 dari 4 run).
@@ -442,8 +453,9 @@ class SupervisorAgent:
         (``planner_messages``); dengan ``profile`` skemanya ``CVPlan``. Sub-tugas di atas
         ``MAX_SUBTASKS`` masuk ``skipped`` agar pengguna diberi tahu bagian yang belum
         dijawab. Dengan CV, balasan out_of_scope untuk pernyataan pindah ke posisi yang disebut
-        diganti satu sub-tugas ``cv_role`` (``career_move_role``). Pertanyaan skill pasar dan
-        asal data dijawab tanpa planner (``direct_subtask``).
+        diganti satu sub-tugas ``cv_role`` (``career_move_role``). Pertanyaan skill pasar, asal
+        data, detail lowongan ber-ID, dan judul lowongan saja dijawab tanpa planner
+        (``direct_subtask``).
         """
         question, history, _ = _chat_context(state.get("messages", []))
         profile = state.get("profile")
@@ -498,11 +510,16 @@ class SupervisorAgent:
         }
 
     def direct_subtask(self, question: str, *, has_history: bool) -> dict[str, str] | None:
-        """Sub-tugas data tanpa planner untuk dua pola terukur, atau ``None``.
+        """Sub-tugas tanpa planner untuk pola terukur, atau ``None``.
 
         - Asal data jawaban, hanya sebagai pertanyaan lanjutan -> ``data_source``.
         - Skill pasar tanpa rujukan diri, posisi, atau kota -> ``skill_stats``. Jika lokasi
           tidak bisa dibaca dari database, planner yang memutuskan.
+        - Detail atau deskripsi tepat satu ID lowongan -> ``job_detail`` dengan ID itu.
+          Permintaan lain di pesan yang sama tidak ikut dijawab.
+        - Pesan yang isinya persis judul lowongan di database -> ``rag`` untuk judul itu;
+          planner membalasnya out_of_scope atau cv_role saat CV aktif (C15-04, C15-05: 0 dari
+          8 run benar).
         """
         if has_history and _SOURCE_QUESTION.search(question):
             return {"agent": "data_source", "question": question}
@@ -512,7 +529,22 @@ class SupervisorAgent:
             and not self._mentions_place(question, default=True)
         ):
             return {"agent": "skill_stats", "question": question}
+        job_ids = set(_JOB_ID.findall(question))
+        if len(job_ids) == 1 and _DETAIL_REQUEST.search(question):
+            return {"agent": "job_detail", "question": job_ids.pop()}
+        title = self._exact_title(question)
+        if title:
+            return {"agent": "rag", "question": JOB_TITLE_QUESTION.format(title=title)}
         return None
+
+    def _exact_title(self, question: str) -> str | None:
+        """Judul lowongan yang sama persis dengan pesan (tanpa beda huruf besar dan spasi)."""
+        wanted = " ".join(question.strip(" ?.!").split()).lower()
+        try:
+            titles = self.job_repository.get_job_titles()
+        except Exception:  # noqa: BLE001 - judul opsional; tanpa judul, planner yang memutuskan
+            return None
+        return next((title for title in titles if " ".join(title.split()).lower() == wanted), None)
 
     def align_subtasks(
         self, question: str, subtasks: list[dict[str, str]], profile: CVProfile | None
@@ -723,7 +755,9 @@ class SupervisorAgent:
         if index is None or kind not in AGENT_NODES or AGENT_NODES[kind] != "cv_agent":
             return {"collected": []}
         profile = state.get("profile")
-        if kind in ("skill_stats", "data_source"):
+        if kind == "job_detail":
+            result = run_job_detail(int(state.get("worker_question", "0")), sqlite_path())
+        elif kind in ("skill_stats", "data_source"):
             result = run_data_agent(kind=kind, profile=profile, db_path=sqlite_path())
         elif kind == "cv_role":
             role = state.get("worker_question", "")

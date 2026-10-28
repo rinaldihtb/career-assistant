@@ -13,6 +13,7 @@ from conftest import ScriptedLLM, agent_script, plan_reply, tool_call
 from src.agents.prompts import (
     CV_ROLE_FAILED_MESSAGE,
     DATA_SOURCE_MESSAGE,
+    JOB_DETAIL_MISSING,
     SUPERVISOR_CHAT_CV_NOTE,
     SUPERVISOR_CHAT_SYSTEM,
     SUPERVISOR_CLARIFY_MESSAGE,
@@ -790,3 +791,43 @@ def test_source_pattern_needs_history_and_skips_human_resources(make_repository,
 
     assert llm.received
     assert state.get("subtasks", []) == []
+
+
+@pytest.mark.parametrize("cv", [{}, CV])
+def test_job_detail_by_id_reads_sqlite_without_llm(make_repository, jobs_db, monkeypatch, cv):
+    monkeypatch.setenv("DB_SQLITE_PATH", str(jobs_db))
+    llm = ScriptedLLM(reply=_no_llm)
+    state = _invoke(llm, make_repository(), "Tampilkan deskripsi lengkap lowongan ID 4", **cv)
+
+    result = state["result"]
+    assert llm.received == []
+    assert state["subtasks"] == [{"agent": "job_detail", "question": "4"}]
+    assert (result.source, result.job_ids, result.usage.llm_calls) == ("sql", [4], 0)
+    assert "- [ID:4] Marketing Manager - PT Delta (Jakarta Raya (Hibrid)): " in result.answer
+
+
+def test_job_detail_for_unknown_id_says_it_is_missing(make_repository, jobs_db, monkeypatch):
+    monkeypatch.setenv("DB_SQLITE_PATH", str(jobs_db))
+    state = _invoke(ScriptedLLM(reply=_no_llm), make_repository(), "detail lowongan id 99")
+
+    assert state["result"].answer == JOB_DETAIL_MISSING.format(id=99)
+    assert state["result"].job_ids == []
+
+
+def test_job_detail_with_two_ids_goes_to_planner(make_repository):
+    question = "Bandingkan detail lowongan ID 1 dan ID 2"
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="out_of_scope"), chat="Halo."))
+    state = _invoke(llm, make_repository(), question)
+
+    assert llm.received
+    assert state.get("subtasks", []) == []
+
+
+@pytest.mark.parametrize("cv", [{}, CV])
+def test_exact_job_title_searches_that_title_without_planner(make_repository, cv):
+    question = "Lowongan Data Analyst Intern"
+    llm = ScriptedLLM(reply=agent_script(answers={question: "Tidak ada yang cocok."}))
+    state = _invoke(llm, make_repository(), "  data analyst   INTERN? ", **cv)
+
+    assert state["subtasks"] == [{"agent": "rag", "question": question}]
+    assert state["planner_usage"].llm_calls == 0

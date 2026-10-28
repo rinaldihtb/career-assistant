@@ -15,6 +15,7 @@ Dua jenis sub-tugas dari planner (``SubTask.agent``):
 Dua jenis sub-tugas data (``run_data_agent``), dipilih supervisor tanpa planner dan tidak
 butuh CV: ``skill_stats`` (skill yang paling sering disebut di seluruh lowongan) dan
 ``data_source`` (asal data jawaban). Keduanya membaca indeks skill yang di-cache per proses.
+``job_detail`` (``run_job_detail``) membaca satu lowongan ber-ID langsung dari SQLite.
 
 Jawaban disusun dari template, bukan LLM: data sudah dihitung saat CV dicocokkan, dan teks
 pertanyaan tidak mengubah hasil. Profil hanya dipakai untuk label posisi dan pengalaman.
@@ -47,6 +48,8 @@ from src.agents.prompts import (
     CV_SOURCE_WITH_LABEL,
     DATA_FAILED_MESSAGE,
     DATA_SOURCE_MESSAGE,
+    JOB_DETAIL_ANSWER,
+    JOB_DETAIL_MISSING,
     SKILL_STATS_EMPTY_MESSAGE,
     SKILL_STATS_HAVE,
     SKILL_STATS_INTRO,
@@ -57,6 +60,7 @@ from src.cv.match import JobMatch, JobSkillIndex, MatchConfig, MatchResult, load
 from src.cv.profile import CVProfile
 from src.cv.skills import build_cv_skills
 from src.models.agent import AgentResult
+from src.repositories.job_repository import get_jobs_by_ids
 
 CVKind = Literal["cv_match", "cv_gap", "cv_role"]
 DataKind = Literal["skill_stats", "data_source"]
@@ -130,6 +134,36 @@ def run_data_agent(*, kind: DataKind, profile: CVProfile | None, db_path: str) -
         return AgentResult(
             answer=DATA_FAILED_MESSAGE, source="general", error=f"Data agent error: {exc}"
         )
+
+
+def run_job_detail(job_id: int, db_path: str) -> AgentResult:
+    """Satu lowongan berdasarkan ID dari SQLite, tanpa LLM; kartu UI memuat deskripsinya.
+
+    Returns:
+        ``AgentResult`` ``source="sql"`` dengan ``job_ids`` berisi ID itu, atau pesan bahwa ID
+        tidak ada. Tidak pernah melempar exception; kegagalan membaca database ada di ``error``.
+    """
+    try:
+        jobs = get_jobs_by_ids(db_path, [job_id])
+    except Exception as exc:  # noqa: BLE001 - kontrak agent: tidak pernah melempar exception
+        return AgentResult(
+            answer=DATA_FAILED_MESSAGE, source="general", error=f"Data agent error: {exc}"
+        )
+    if not jobs:
+        return AgentResult(answer=JOB_DETAIL_MISSING.format(id=job_id), source="sql")
+    job = jobs[0]
+    answer = JOB_DETAIL_ANSWER.format(
+        id=job_id,
+        title=_one_line(job["job_title"]),
+        company=_one_line(job["company_name"]),
+        location=_one_line(job["location"]),
+    )
+    return AgentResult(answer=answer, source="sql", job_ids=[job_id])
+
+
+def _one_line(text: str | None) -> str:
+    """Teks kolom dalam satu baris; lokasi di data bisa memuat baris baru sebelum "(Hibrid)"."""
+    return " ".join((text or "-").split())
 
 
 def skill_stats_answer(index: JobSkillIndex, profile: CVProfile | None) -> str:
