@@ -79,11 +79,10 @@ class FakeEmbeddings:
         return [0.1, 0.2, 0.3]
 
 
-def candidate(job_id, cos, matched=0, required=0, mean=None):
+def candidate(job_id, cos, matched=0, required=0):
     return {
         "job_id": job_id,
         "max": cos,
-        "mean": cos if mean is None else mean,
         "matched": matched,
         "required": required,
     }
@@ -102,7 +101,6 @@ def test_collect_candidates_filters_like_rank_jobs(jobs_db):
     assert [c["job_id"] for c in candidates] == [1, 2, 3, 5, 6]  # tanpa 4 (pendek) dan 99
     first = candidates[0]
     assert first["max"] == pytest.approx(0.60)
-    assert first["mean"] == pytest.approx((0.60 + 0.55 + 0.40) / 3)  # isian chunk terendah
     assert (first["matched"], first["required"]) == (2, 2)
     job5 = candidates[3]
     assert (job5["matched"], job5["required"]) == (1, 2)  # Python cocok, REST API kurang
@@ -112,7 +110,6 @@ def test_collect_candidates_filters_like_rank_jobs(jobs_db):
     "config",
     [
         MatchConfig(),
-        MatchConfig(aggregation="mean"),
         MatchConfig(skill_prior=0.0, semantic_weight=0.4),
         MatchConfig(semantic_floor=0.5, semantic_ceiling=0.6, semantic_weight=0.8),
     ],
@@ -297,7 +294,7 @@ def test_check_achievements_flags_changed_numbers_translation_and_unknown_contex
 
 def test_evaluate_config_precision_and_top_score():
     candidates = [candidate(i, 0.60 - i / 100) for i in range(1, 13)]
-    runs = [{"id": "cv01", "gold": {1, 2, 3, 11}, "candidates": {"profile": candidates}}]
+    runs = [{"id": "cv01", "gold": {1, 2, 3, 11}, "candidates": candidates}]
     config = MatchConfig(semantic_weight=1.0, semantic_floor=0.40, semantic_ceiling=0.60)
     result = evaluate_config(config, runs)
     assert result["p5"] == {"cv01": pytest.approx(0.6)}

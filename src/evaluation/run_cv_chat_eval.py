@@ -94,27 +94,20 @@ class CandidateStore:
             reverse=True,
         )
 
-    def similarity_search_with_score_by_vector(self, vector, k=4, **kwargs):
+    def similarity_search_with_score_by_vector(self, vector, k=4):
         return self.hits[:k]
 
 
 def rebuild_matches(
     profile: CVProfile, candidates: Sequence[Mapping[str, Any]], db_path: str | Path
 ) -> MatchResult:
-    """Hasil Cocokkan CV dari kandidat tersimpan, dengan kode ``rank_jobs`` yang dipakai app.
-
-    Raises:
-        ValueError: ``MatchConfig()`` bukan agregasi ``max`` (stub hanya menyimpan ``max``).
-    """
-    config = MatchConfig()
-    if config.aggregation != "max":
-        raise ValueError("rebuild_matches hanya mendukung aggregation='max'")
+    """Hasil Cocokkan CV dari kandidat tersimpan, dengan kode ``rank_jobs`` yang dipakai app."""
     matches, chunks, unique = rank_jobs(
         [],
         build_cv_skills(profile.skills),
         vector_store=CandidateStore(candidates),
         db_path=db_path,
-        config=config,
+        config=MatchConfig(),
     )
     return MatchResult(matches=matches, chunks_found=chunks, unique_jobs=unique)
 

@@ -5,7 +5,7 @@
     make eval-cv ARGS="--rescore tests/eval/results/<file>.json"
                                           hitung ulang dari kandidat tersimpan, tanpa API
 
-Biaya per CV: 1 panggilan LLM (profil), 1 embedding (teks ``MatchConfig().query``), 1 query
+Biaya per CV: 1 panggilan LLM (profil), 1 embedding (ringkasan profil), 1 query
 Qdrant (k = ``MatchConfig().k``). Metrik dihitung di Python dari kandidat tersimpan, jadi
 mengoreksi gold atau mengubah bobot skor bisa dinilai ulang dengan ``--rescore`` tanpa API.
 
@@ -13,7 +13,7 @@ Alur per CV:
 1. ``extract_cv_text`` -> ``extract_cv_profile`` -> nilai profil terhadap gold (recall skill,
    skill yang dikarang, jenjang pendidikan, jumlah pengalaman) dan cek kutipan pencapaian
    terhadap teks CV (tanpa gold).
-2. Semua lowongan kandidat disimpan dengan cosine ``max`` dan ``mean`` serta jumlah skill
+2. Semua lowongan kandidat disimpan dengan cosine chunk terbaik (``max``) serta jumlah skill
    cocok/disebut. Yang disimpan hanya angka, ID, dan profil (CV-nya fiktif); teks CV tidak
    disimpan.
 3. Kandidat diurutkan dengan ``MatchConfig()``; metrik: precision@5 dan @10 terhadap gold,
@@ -71,8 +71,6 @@ TRACKED_FILES = (
 TOP_SCORE_RANGE = (0.70, 0.90)  # skor teratas yang wajar ditampilkan di kartu hasil
 DEFAULT = MatchConfig()
 CONFIG_FIELDS = {
-    "query",
-    "aggregation",
     "skill_prior",
     "semantic_weight",
     "semantic_floor",
@@ -248,12 +246,12 @@ def collect_candidates(
     """Semua lowongan kandidat untuk satu vektor query: 1 query Qdrant, tanpa embedding/LLM.
 
     Filter chunk dan agregasi sama dengan ``rank_jobs``. Bedanya, semua kandidat disimpan
-    dengan kedua agregasi dan jumlah skill mentah, supaya ``--rescore`` tetap sahih jika
-    agregasi atau bobot di ``MatchConfig`` diubah.
+    dengan jumlah skill mentah, supaya ``--rescore`` tetap sahih jika bobot di ``MatchConfig``
+    diubah.
 
     Returns:
-        Daftar dict ``job_id``, ``max``, ``mean`` (cosine), ``matched``, ``required``
-        (jumlah skill), urut ``job_id``.
+        Daftar dict ``job_id``, ``max`` (cosine), ``matched``, ``required`` (jumlah skill),
+        urut ``job_id``.
     """
     chunks = vector_store.similarity_search_with_score_by_vector(query_vector, k=config.k)
     hits = [
@@ -262,8 +260,7 @@ def collect_candidates(
         if doc.metadata.get("job_id") is not None
         and len(doc.page_content.strip()) >= MIN_CHUNK_CHARS
     ]
-    by_max = aggregate_job_scores(hits, method="max")
-    by_mean = aggregate_job_scores(hits, method="mean", top_chunks=config.top_chunks)
+    by_max = aggregate_job_scores(hits)
     candidates = []
     for job_id in sorted(by_max):
         if job_id not in index.vocab:
@@ -278,7 +275,6 @@ def collect_candidates(
             {
                 "job_id": job_id,
                 "max": by_max[job_id],
-                "mean": by_mean[job_id],
                 "matched": len(skills.matched),
                 "required": skills.required,
             }
@@ -296,7 +292,7 @@ def rank_candidates(
     """
     scored = []
     for candidate in candidates:
-        raw = candidate[config.aggregation]
+        raw = candidate["max"]
         scaled = scale_semantic(raw, config.semantic_floor, config.semantic_ceiling)
         skill = skill_score(candidate["matched"], candidate["required"], config.skill_prior)
         total = combine_score(scaled, skill, config.semantic_weight)
@@ -314,13 +310,13 @@ def evaluate_config(config: MatchConfig, runs: Sequence[Mapping[str, Any]]) -> d
     """Precision@5, precision@10, dan skor teratas per CV untuk satu konfigurasi.
 
     Args:
-        runs: Per CV: ``id``, ``gold`` (set ID), ``candidates`` (``{query: kandidat}``).
+        runs: Per CV: ``id``, ``gold`` (set ID), ``candidates`` (hasil ``collect_candidates``).
     """
     p5: dict[str, float] = {}
     p10: dict[str, float] = {}
     top: dict[str, float | None] = {}
     for run in runs:
-        ranked = rank_candidates(run["candidates"][config.query], config)
+        ranked = rank_candidates(run["candidates"], config)
         ids = [job_id for job_id, _ in ranked]
         p5[run["id"]] = precision_at(ids, run["gold"], 5)
         p10[run["id"]] = precision_at(ids, run["gold"], 10)
@@ -353,10 +349,10 @@ def analyze(
             "id": r["id"],
             "gold": set(r["gold_ids"]),
             "judged": set(r["gold_ids"]) | set(r.get("not_relevant_ids") or ()),
-            "candidates": r["candidates"],
+            "candidates": r["candidates"]["profile"],
         }
         for r in records
-        if not r.get("error") and config.query in (r.get("candidates") or {})
+        if not r.get("error") and "profile" in (r.get("candidates") or {})
     ]
     if not runs:
         return {"error": "Tidak ada CV dengan kandidat"}
@@ -365,7 +361,7 @@ def analyze(
     low, high = TOP_SCORE_RANGE
     top = {}
     for run in runs:
-        ranked = rank_candidates(run["candidates"][config.query], config)
+        ranked = rank_candidates(run["candidates"], config)
         top[run["id"]] = [
             {
                 "job_id": job_id,
@@ -458,15 +454,16 @@ def run_case(
     # Nama dan kontak tidak dinilai eval, jadi tidak ditulis ke JSON hasil.
     record["profile"] = profile.model_dump(mode="json", exclude={"full_name", "contacts"})
 
-    text = profile_query_text(profile) if DEFAULT.query == "profile" else cv.text
+    text = profile_query_text(profile)
     record["query_chars"] = len(text)
     try:
         index = load_job_skill_index(str(Path(db_path).resolve()))
         started = time.perf_counter()
         vector = embeddings.embed_query(text)
         embedded = time.perf_counter()
+        # Kunci "profile" (teks query) tetap dipakai agar --rescore bisa membaca hasil lama.
         record["candidates"] = {
-            DEFAULT.query: collect_candidates(
+            "profile": collect_candidates(
                 vector, build_cv_skills(profile.skills), vector_store=vector_store, index=index
             )
         }
@@ -505,13 +502,12 @@ def run_metadata(label: str, started: datetime, cases_path: Path) -> dict[str, A
             if Path(path).exists()
         },
         "k": DEFAULT.k,
-        "top_chunks": DEFAULT.top_chunks,
     }
 
 
 def _config_label(config: Mapping[str, Any]) -> str:
     return (
-        f"{config['query']} {config['aggregation']} prior {config['skill_prior']:g} "
+        f"prior {config['skill_prior']:g} "
         f"w {config['semantic_weight']:.1f} [{config['semantic_floor']:.2f}-"
         f"{config['semantic_ceiling']:.2f}]"
     )

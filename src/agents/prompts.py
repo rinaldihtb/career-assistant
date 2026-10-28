@@ -14,20 +14,6 @@ Placeholder ``{...}`` diisi dengan ``str.format`` oleh agent.
 # catatan isi data yang tidak ada di DDL: format lokasi, nilai work_type, gaji NULL.
 # Titik sinkron: jika scripts/seed_database.py mengubah kolom, ubah juga di sini.
 # tests/test_sql_tools.py::test_schema_prompt_matches_database akan gagal jika lupa.
-SQL_SCHEMA_COLUMNS = (
-    "id",
-    "job_title",
-    "company_name",
-    "location",
-    "work_type",
-    "job_description",
-    "salary_min",
-    "salary_max",
-    "salary_period",
-    "salary_currency",
-    "status",
-)
-
 SQL_GENERATION_SYSTEM = """Kamu menulis SATU query SQLite untuk menjawab pertanyaan tentang data lowongan kerja di Indonesia.
 
 Skema:
@@ -139,24 +125,9 @@ SQL_ANSWER_SYSTEM = """Kamu asisten karier. Jawab pertanyaan pengguna dalam baha
 - Jika muncul company_name "Pengiklan Anonim", jelaskan bahwa itu iklan tanpa nama perusahaan (bisa dari banyak perusahaan); pada pertanyaan peringkat perusahaan, sebutkan juga perusahaan bernama teratas.
 - Ringkas: kalimat pembuka singkat, lalu poin atau daftar lowongan."""
 
-SQL_ANSWER_USER = """Pertanyaan: {question}
-
-Query yang dijalankan:
-{sql}
-
-Hasil ({row_count} baris):
-{rows}"""
-
 # ---------------------------------------------------------------------------
 # Pesan tetap (tanpa LLM)
 # ---------------------------------------------------------------------------
-
-SQL_FAILED_MESSAGE = (
-    "Maaf, saya belum berhasil mengambil data untuk pertanyaan ini. "
-    "Coba tulis ulang dengan lebih spesifik, misalnya sebutkan posisi atau kota."
-)
-
-SQL_EMPTY_RESULT_MESSAGE = "Tidak ada lowongan di data kami yang cocok dengan kriteria tersebut."
 
 # Ditambahkan Python dari kolom lowongan_tanpa_gaji: eval b3-answer menunjukkan LLM
 # menulis "1 lowongan lain" padahal nilainya 12 (T1b-02) dan 6 (T3-02), dan tetap
@@ -172,11 +143,6 @@ SQL_TRUNCATED_NOTE = (
 
 # Balasan LLM untuk aturan 8 di SQL_GENERATION_SYSTEM; harus sama persis dengan teks di prompt.
 SQL_NOT_RELEVANT_TOKEN = "TIDAK_RELEVAN"
-
-SQL_NOT_RELEVANT_MESSAGE = (
-    "Maaf, saya hanya bisa menjawab pertanyaan statistik tentang data lowongan "
-    "dan tidak bisa mengubah atau menghapus data."
-)
 
 # ---------------------------------------------------------------------------
 # RAG agent
@@ -197,28 +163,6 @@ Aturan:
 6. Format jawaban: satu kalimat pembuka, lalu satu baris per lowongan yang cocok, persis seperti ini:
 - [ID:123] Judul - Perusahaan (Lokasi): alasan singkat kenapa cocok.
 Jangan menulis daftar ID terpisah di akhir jawaban."""
-
-RAG_ANSWER_USER = """Pertanyaan: {question}
-
-Kandidat lowongan ({count}):
-{jobs}"""
-
-RAG_JOB_TEMPLATE = """<job id="{id}">
-Judul: {job_title}
-Perusahaan: {company_name}
-Lokasi: {location}
-Tipe kerja: {work_type}
-Gaji: {salary}
-Bagian deskripsi yang paling cocok: {matched_chunk}
-Awal deskripsi: {description}
-</job>"""
-
-RAG_NO_CANDIDATE_MESSAGE = (
-    "Tidak ada lowongan di data kami yang cocok dengan pertanyaan tersebut. "
-    "Coba sebutkan posisi, bidang, atau kota lain."
-)
-
-RAG_FAILED_MESSAGE = "Maaf, pencarian lowongan sedang bermasalah. Coba beberapa saat lagi."
 
 # ---------------------------------------------------------------------------
 # Supervisor (planner)
@@ -426,10 +370,6 @@ SUPERVISOR_DECLINED_NOTE = (
 SUPERVISOR_SKIPPED_NOTE = (
     "Pertanyaan berikut belum saya jawab karena batas 3 bagian per pesan. "
     "Silakan tanyakan terpisah:"
-)
-
-SUPERVISOR_FAILED_MESSAGE = (
-    "Maaf, terjadi kesalahan saat memproses pertanyaan. Coba beberapa saat lagi."
 )
 
 # ---------------------------------------------------------------------------

@@ -26,46 +26,7 @@ def render_hero() -> None:
         st.caption("Dibangun untuk membantu pencari kerja membuat keputusan yang lebih jelas.")
 
 
-def render_feature_cards() -> None:
-    """Describe the core application capabilities."""
-    st.header("Apa yang bisa Anda lakukan?")
-    search_column, insight_column, plan_column = st.columns(3)
-
-    with search_column, st.container(border=True):
-        st.subheader("🔎 Cari lowongan")
-        st.write(
-            "Gunakan kata kunci, lokasi, tipe kerja, dan rentang gaji untuk mempersempit pencarian."
-        )
-
-    with insight_column, st.container(border=True):
-        st.subheader("📄 Pahami kebutuhan role")
-        st.write(
-            "Baca detail tanggung jawab, kualifikasi, lokasi, dan informasi "
-            "kompensasi dalam satu tampilan."
-        )
-
-    with plan_column, st.container(border=True):
-        st.subheader("✨ Siapkan karier Anda")
-        st.write(
-            "Fitur analisis CV dan rekomendasi skill dapat membantu Anda "
-            "menyiapkan langkah berikutnya."
-        )
-
-
-def render_how_it_works() -> None:
-    """Render a short, descriptive application flow."""
-    st.header("Cara kerja")
-    first, second, third = st.columns(3)
-    first.metric("1", "Cari role yang diminati")
-    second.metric("2", "Pelajari detail lowongan")
-    third.metric("3", "Tentukan langkah persiapan")
-
-
 def render_landing_page() -> None:
     """Compose a descriptive landing page without job-search content."""
     st.markdown("# Career Assistant")
     render_hero()
-    # st.divider()
-    # render_feature_cards()
-    # st.divider()
-    # render_how_it_works()

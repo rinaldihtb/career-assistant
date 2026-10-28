@@ -490,35 +490,25 @@ class SupervisorAgent:
             else task
             for task in subtasks
         ]
-        if profile is not None:
-            aligned = self.align_role_subtasks(aligned, profile)
+        if profile is None:
+            return aligned  # skema Plan tanpa CV hanya punya sub-tugas sql dan rag
+        aligned = self.align_role_subtasks(aligned, profile)
         agents = {task["agent"] for task in aligned}
-        if "cv_match" in agents and agents & {"sql", "rag"} and not _MATCH_REQUEST.search(question):
-            aligned = [task for task in aligned if task["agent"] != "cv_match"]
-            agents.discard("cv_match")
         if (
-            profile is not None
-            and {"cv_match", "rag"} <= agents
-            and self._has_personal_rag(aligned, profile)
+            "cv_match" in agents
+            and agents & {"sql", "rag"}
+            and (not _MATCH_REQUEST.search(question) or self._has_personal_rag(aligned, profile))
         ):
             aligned = [task for task in aligned if task["agent"] != "cv_match"]
             agents.discard("cv_match")
-        if (
-            profile is not None
-            and agents
-            and agents <= {"cv_match", "cv_gap"}
-            and _CAREER_SWITCH.search(question)
-        ):
+        if agents and agents <= {"cv_match", "cv_gap"} and _CAREER_SWITCH.search(question):
             return []
-        if profile is None or "cv_match" not in agents or agents & {"sql", "rag"}:
-            return aligned
-        if not _SELF_REFERENCE.search(question):
-            return aligned
-        try:
-            places = RagAgent(self.llm, self.job_repository).find_places(question)
-        except Exception:  # noqa: BLE001 - deteksi lokasi opsional; rute planner tetap dipakai
-            return aligned
-        if not places:
+        if (
+            "cv_match" not in agents
+            or agents & {"sql", "rag"}
+            or not _SELF_REFERENCE.search(question)
+            or not self._mentions_place(question, default=False)
+        ):
             return aligned
         rag = {"agent": "rag", "question": replace_self_references(question, profile_role(profile))}
         return [rag if task["agent"] == "cv_match" else task for task in aligned]

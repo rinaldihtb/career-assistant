@@ -152,12 +152,6 @@ class FakeVectorStore:
 
 
 @pytest.fixture
-def fake_vector_store():
-    """Fixture pabrik stub: ``fake_vector_store([(job_id, teks, skor), ...])``."""
-    return FakeVectorStore
-
-
-@pytest.fixture
 def make_repository(jobs_db):
     """Pabrik ``JobRepository`` di atas ``jobs_db``: ``make_repository([(job_id, teks, skor)])``."""
 

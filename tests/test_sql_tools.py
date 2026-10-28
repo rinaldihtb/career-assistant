@@ -1,5 +1,6 @@
 """SQL agent bagian tanpa LLM: validasi query dan eksekusi baca-saja di repository."""
 
+import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy.exc import DBAPIError
 
-from src.agents.prompts import SQL_NO_SALARY_NOTE, SQL_SCHEMA_COLUMNS, SQL_TRUNCATED_NOTE
+from src.agents.prompts import SQL_GENERATION_SYSTEM, SQL_NO_SALARY_NOTE, SQL_TRUNCATED_NOTE
 from src.agents.sql_agent import SqlAgent, complete_job_list, finalize_answer
 from src.repositories.job_repository import DEFAULT_DB_PATH, connect_readonly, sqlite_path
 
@@ -183,8 +184,9 @@ def test_schema_prompt_matches_database():
     with closing(connect_readonly(REAL_DB_PATH)) as conn:
         cursor = conn.execute("SELECT * FROM jobs LIMIT 0")
         db_columns = {column[0] for column in cursor.description}
-    missing = set(SQL_SCHEMA_COLUMNS) - db_columns
-    assert not missing, f"Kolom di prompt tidak ada di database: {missing}"
+    prompt_columns = set(re.findall(r"^  (\w+) ", SQL_GENERATION_SYSTEM, re.MULTILINE))
+    missing = prompt_columns - db_columns
+    assert prompt_columns and not missing, f"Kolom di prompt tidak ada di database: {missing}"
 
 
 # --- stem_title_patterns -----------------------------------------------------

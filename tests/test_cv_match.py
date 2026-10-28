@@ -106,15 +106,7 @@ def test_profile_query_text_empty_profile():
 
 def test_aggregate_max():
     hits = [(1, 0.6), (1, 0.5), (2, 0.4)]
-    assert aggregate_job_scores(hits, method="max") == {1: 0.6, 2: 0.4}
-
-
-def test_aggregate_mean_pads_missing_chunks_with_lowest_retrieved_score():
-    hits = [(1, 0.6), (1, 0.5), (1, 0.4), (1, 0.1), (2, 0.6), (3, 0.2)]
-    result = aggregate_job_scores(hits, method="mean", top_chunks=3)
-    assert result[1] == pytest.approx(0.5)
-    assert result[2] == pytest.approx((0.6 + 0.1 + 0.1) / 3)
-    assert result[3] == pytest.approx((0.2 + 0.1 + 0.1) / 3)
+    assert aggregate_job_scores(hits) == {1: 0.6, 2: 0.4}
 
 
 def test_aggregate_empty():
@@ -185,18 +177,6 @@ def test_match_jobs_ranks_by_combined_score(jobs_db):
     assert third.score == pytest.approx(0.6 * third.semantic_scaled)
 
 
-def test_match_jobs_mean_aggregation(jobs_db):
-    result = match_jobs(
-        make_profile(),
-        embeddings=FakeEmbeddings(),
-        vector_store=VectorStoreByVector(CHUNKS),
-        db_path=jobs_db,
-        config=MatchConfig(aggregation="mean"),
-    )
-    assert result.matches[0].job_id == 1
-    assert result.matches[0].semantic == pytest.approx(0.55)
-
-
 def test_match_jobs_embeds_profile_summary_once_and_passes_k(jobs_db):
     embeddings = FakeEmbeddings()
     store = VectorStoreByVector(CHUNKS)
@@ -222,33 +202,6 @@ def test_match_jobs_limit(jobs_db):
     assert [m.job_id for m in result.matches] == [1]
 
 
-def test_match_jobs_cv_text_mode(jobs_db):
-    embeddings = FakeEmbeddings()
-    result = match_jobs(
-        make_profile(),
-        embeddings=embeddings,
-        vector_store=VectorStoreByVector(CHUNKS),
-        db_path=jobs_db,
-        cv_text="  teks CV lengkap  ",
-        config=MatchConfig(query="cv_text"),
-    )
-    assert result.error is None
-    assert embeddings.texts == ["teks CV lengkap"]
-
-
-def test_match_jobs_cv_text_mode_without_text_returns_error(jobs_db):
-    embeddings = FakeEmbeddings()
-    result = match_jobs(
-        make_profile(),
-        embeddings=embeddings,
-        vector_store=VectorStoreByVector(CHUNKS),
-        db_path=jobs_db,
-        config=MatchConfig(query="cv_text"),
-    )
-    assert result.error is not None
-    assert embeddings.texts == []
-
-
 def test_match_jobs_empty_profile_makes_no_embedding_call(jobs_db):
     embeddings = FakeEmbeddings()
     result = match_jobs(
@@ -257,7 +210,7 @@ def test_match_jobs_empty_profile_makes_no_embedding_call(jobs_db):
         vector_store=VectorStoreByVector(CHUNKS),
         db_path=jobs_db,
     )
-    assert result.error == "Profil atau teks CV kosong"
+    assert result.error == "Profil kosong"
     assert result.embedding_calls == 0
     assert embeddings.texts == []
 

@@ -1,8 +1,10 @@
 """Cocokkan CV dengan lowongan: kemiripan Qdrant + porsi skill. 1 embedding, 0 LLM.
 
 Alur ``match_jobs``:
-1. Teks query: ringkasan profil (default) atau teks CV mentah; di-embed sekali.
-2. Qdrant: ``k`` chunk terdekat dari seluruh koleksi, lalu skor diagregasi per ``job_id``.
+1. Teks query: ringkasan profil; di-embed sekali.
+2. Qdrant: ``k`` chunk terdekat dari seluruh koleksi; skor lowongan = cosine chunk terbaiknya.
+   Pada CV asli top-10-nya sama dengan rata-rata 3 chunk teratas, dan skor chunk terbaik
+   tidak berubah saat ``k`` dinaikkan.
 3. Skor semantik dikalibrasi ke 0..1 dengan batas tetap (``semantic_floor``/``ceiling``),
    bukan min-max per query, supaya persentase tidak bergeser setiap "Cocokkan ulang".
 4. Skor skill dari ``cv.skills`` (regex, kosakata yang di-cache per proses):
@@ -12,9 +14,8 @@ Alur ``match_jobs``:
 5. Skor akhir = ``w * semantik + (1 - w) * skor skill``. Lowongan yang tidak menyebut skill
    kosakata mendapat skor skill 0 (rumus yang sama, tanpa kasus khusus).
 
-Ringkasan profil menjadi default karena koreksi pengguna di UI ikut di-embed saat "Cocokkan
-ulang", dan ringkasan tidak memuat nama atau kontak. Teks CV mentah (``query="cv_text"``)
-hanya untuk pengukuran.
+Yang di-embed ringkasan profil, bukan teks CV mentah: koreksi pengguna di UI ikut di-embed
+saat "Cocokkan ulang", dan ringkasan tidak memuat nama atau kontak.
 
 Nilai default ``MatchConfig`` dipilih dengan set eval Cocokkan CV (tests/eval/cv_cases.yaml,
 5 CV fiktif): precision@5 dan @10 = 1.00 untuk kelima CV. Default berada di tengah rentang
@@ -23,12 +24,12 @@ yang sama baiknya: query profil + ``max`` dengan ``skill_prior`` 1-3 dan ``seman
 mencapai 1.00/1.00.
 """
 
-from collections import Counter, defaultdict
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel, Field
@@ -40,15 +41,9 @@ from src.repositories.job_repository import get_job_descriptions, get_jobs_by_id
 
 
 class MatchConfig(BaseModel):
-    """Parameter pencocokan. Semua bisa diubah tanpa embed ulang, kecuali ``query``.
+    """Parameter pencocokan. Semua bisa diubah tanpa embed ulang.
 
     Attributes:
-        query: Teks yang di-embed: ringkasan profil atau teks CV mentah.
-        aggregation: Skor lowongan dari chunk-nya: chunk terbaik (``max``) atau rata-rata
-            ``top_chunks`` teratas (``mean``). Default ``max``: pada CV asli top-10 keduanya
-            berisi lowongan yang sama, sedangkan ``max`` tidak butuh isian skor dan skor
-            chunk terbaik tidak berubah saat ``k`` dinaikkan.
-        top_chunks: Jumlah chunk yang dirata-rata (hanya untuk ``mean``).
         k: Jumlah chunk yang diambil dari Qdrant (dari 3.613).
         semantic_weight: Bobot komponen semantik; sisanya untuk skor skill.
         skill_prior: Penambah penyebut skor skill; makin besar, makin sedikit pengaruh
@@ -62,9 +57,6 @@ class MatchConfig(BaseModel):
         limit: Jumlah lowongan yang dikembalikan.
     """
 
-    query: Literal["profile", "cv_text"] = "profile"
-    aggregation: Literal["mean", "max"] = "max"
-    top_chunks: int = Field(default=3, ge=1)
     k: int = Field(default=400, ge=1)
     semantic_weight: float = Field(default=0.6, ge=0.0, le=1.0)
     skill_prior: float = Field(default=2.0, ge=0.0)
@@ -102,7 +94,6 @@ class MatchResult(BaseModel):
     """Hasil ``match_jobs``. ``error`` terisi jika gagal; ``matches`` kosong."""
 
     matches: list[JobMatch] = Field(default_factory=list)
-    query_chars: int = 0
     embedding_calls: int = 0
     chunks_found: int = 0
     unique_jobs: int = 0
@@ -151,42 +142,12 @@ def profile_query_text(profile: CVProfile) -> str:
     return "\n".join(parts)
 
 
-def aggregate_job_scores(
-    hits: Iterable[tuple[int, float]],
-    *,
-    method: Literal["mean", "max"] = "mean",
-    top_chunks: int = 3,
-) -> dict[int, float]:
-    """Gabungkan skor chunk menjadi satu skor per lowongan.
-
-    Untuk ``mean``, lowongan yang chunk-nya terambil kurang dari ``top_chunks`` diisi dengan
-    skor chunk terendah yang terambil dari Qdrant. Chunk lowongan itu yang tidak terambil
-    pasti skornya tidak lebih tinggi dari nilai tersebut, jadi isian ini batas atas yang
-    jujur. Tanpa isian, lowongan dengan satu chunk bagus akan mengalahkan lowongan dengan
-    tiga chunk bagus.
-
-    Args:
-        hits: Pasangan ``(job_id, skor cosine)``.
-        method: ``mean`` (rata-rata ``top_chunks`` teratas) atau ``max``.
-        top_chunks: Jumlah chunk yang dirata-rata.
-
-    Returns:
-        ``{job_id: skor}``; kosong jika ``hits`` kosong.
-    """
-    by_job: dict[int, list[float]] = defaultdict(list)
+def aggregate_job_scores(hits: Iterable[tuple[int, float]]) -> dict[int, float]:
+    """Skor per lowongan dari pasangan ``(job_id, cosine)``: cosine chunk terbaiknya."""
+    scores: dict[int, float] = {}
     for job_id, score in hits:
-        by_job[job_id].append(score)
-    if not by_job:
-        return {}
-    if method == "max":
-        return {job_id: max(scores) for job_id, scores in by_job.items()}
-    pad = min(score for scores in by_job.values() for score in scores)
-    result: dict[int, float] = {}
-    for job_id, scores in by_job.items():
-        top = sorted(scores, reverse=True)[:top_chunks]
-        top += [pad] * (top_chunks - len(top))
-        result[job_id] = sum(top) / top_chunks
-    return result
+        scores[job_id] = max(score, scores.get(job_id, score))
+    return scores
 
 
 def scale_semantic(score: float, floor: float, ceiling: float) -> float:
@@ -221,8 +182,8 @@ def rank_jobs(
 ) -> tuple[list[JobMatch], int, int]:
     """Urutkan lowongan untuk satu vektor query; tanpa embedding dan tanpa LLM.
 
-    Dipisah dari ``match_jobs`` agar skrip pengukuran bisa mencoba banyak konfigurasi
-    dengan satu vektor (satu kali bayar embedding).
+    Dipisah dari ``_match_text`` agar eval cv-chat bisa mengurutkan kandidat tersimpan
+    tanpa embedding (``rebuild_matches``).
 
     Args:
         query_vector: Hasil ``embed_query``.
@@ -246,7 +207,7 @@ def rank_jobs(
         if doc.metadata.get("job_id") is not None
         and len(doc.page_content.strip()) >= MIN_CHUNK_CHARS
     ]
-    semantic = aggregate_job_scores(hits, method=config.aggregation, top_chunks=config.top_chunks)
+    semantic = aggregate_job_scores(hits)
     index = load_job_skill_index(str(Path(db_path).resolve()))
 
     scored: list[tuple[float, float, int, float, float, Any]] = []
@@ -299,7 +260,6 @@ def match_jobs(
     embeddings: Embeddings,
     vector_store: Any,
     db_path: str | Path,
-    cv_text: str | None = None,
     config: MatchConfig | None = None,
 ) -> MatchResult:
     """Cari lowongan paling cocok untuk profil CV. Tepat satu embedding, nol LLM.
@@ -309,24 +269,22 @@ def match_jobs(
         embeddings: Model embedding yang sama dengan koleksi Qdrant.
         vector_store: Vector store (lihat ``rank_jobs``).
         db_path: Path SQLite.
-        cv_text: Wajib jika ``config.query == "cv_text"``.
         config: Parameter; default ``MatchConfig()``.
 
     Returns:
         ``MatchResult``. Tidak pernah melempar exception; kegagalan di ``error``.
         Hasil cukup di-cache per versi profil oleh pemanggil (``st.session_state``).
     """
-    config = config or MatchConfig()
-    text = (cv_text or "").strip() if config.query == "cv_text" else profile_query_text(profile)
+    text = profile_query_text(profile)
     if not text:
-        return MatchResult(error="Profil atau teks CV kosong")
+        return MatchResult(error="Profil kosong")
     return _match_text(
         text,
         profile.skills,
         embeddings=embeddings,
         vector_store=vector_store,
         db_path=db_path,
-        config=config,
+        config=config or MatchConfig(),
     )
 
 
@@ -375,7 +333,7 @@ def _match_text(
     try:
         vector = embeddings.embed_query(text)
     except Exception as exc:  # noqa: BLE001 - tipe error provider embedding beragam
-        return MatchResult(query_chars=len(text), error=f"Embedding error: {exc}")
+        return MatchResult(error=f"Embedding error: {exc}")
 
     try:
         matches, chunks_found, unique_jobs = rank_jobs(
@@ -386,13 +344,10 @@ def _match_text(
             config=config,
         )
     except Exception as exc:  # noqa: BLE001 - error Qdrant/SQLite dilaporkan, bukan dilempar
-        return MatchResult(
-            query_chars=len(text), embedding_calls=1, error=f"Pencarian error: {exc}"
-        )
+        return MatchResult(embedding_calls=1, error=f"Pencarian error: {exc}")
 
     return MatchResult(
         matches=matches,
-        query_chars=len(text),
         embedding_calls=1,
         chunks_found=chunks_found,
         unique_jobs=unique_jobs,
