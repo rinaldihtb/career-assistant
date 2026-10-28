@@ -1,13 +1,14 @@
 """Agent CV: jawaban dari hasil Cocokkan CV tanpa LLM (src/agents/cv_agent.py)."""
 
 from src.agents import cv_agent
-from src.agents.cv_agent import CV_MATCH_LIMIT, profile_label, run_cv_agent
+from src.agents.cv_agent import CV_MATCH_LIMIT, profile_label, run_cv_agent, run_data_agent
 from src.agents.prompts import (
     CV_FAILED_MESSAGE,
     CV_GAP_PLAN,
     CV_NO_MATCHES_MESSAGE,
     CV_ROLE_EMPTY_MESSAGE,
     CV_ROLE_FAILED_MESSAGE,
+    DATA_FAILED_MESSAGE,
 )
 from src.components.assistant_chat import split_rag_answer
 from src.cv.match import JobMatch, MatchResult
@@ -212,3 +213,10 @@ def test_role_answer_without_jobs():
 
     assert result.answer == CV_ROLE_EMPTY_MESSAGE.format(role="Pilot")
     assert result.error is None
+
+
+def test_data_agent_reports_unreadable_database(tmp_path):
+    result = run_data_agent(kind="skill_stats", profile=None, db_path=str(tmp_path / "x.sqlite"))
+
+    assert result.answer == DATA_FAILED_MESSAGE
+    assert result.error.startswith("Data agent error")

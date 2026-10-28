@@ -73,6 +73,7 @@ SOURCE_LABELS = {
     "general": "Pesan umum",
     "multi": "Gabungan beberapa agent",
     "cv": "Hasil Cocokkan CV",
+    "data": "Statistik skill seluruh lowongan",
 }
 STEP_LABELS = {
     "planner": "Planner: pecah pertanyaan",

@@ -92,7 +92,7 @@ class AgentResult(BaseModel):
     """
 
     answer: str
-    source: Literal["rag", "sql", "cv", "general", "multi"]
+    source: Literal["rag", "sql", "cv", "data", "general", "multi"]
     job_ids: list[int] = Field(default_factory=list)
     sql: str | None = None
     rows: list[dict[str, Any]] = Field(default_factory=list)

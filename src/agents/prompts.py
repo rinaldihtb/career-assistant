@@ -421,6 +421,24 @@ CV_ROLE_EMPTY_MESSAGE = "Tidak ada lowongan yang mirip dengan posisi {role} di d
 CV_ROLE_FAILED_MESSAGE = (
     "Maaf, lowongan untuk posisi {role} tidak bisa dicari saat ini. Coba lagi beberapa saat lagi."
 )
+# Statistik skill seluruh lowongan (``skill_stats``) dan asal data jawaban (``data_source``),
+# keduanya dari indeks skill lowongan tanpa LLM.
+SKILL_STATS_INTRO = (
+    "Skill yang paling sering disebut di {total} lowongan data kami (dihitung dari kosakata "
+    "skill di deskripsi lowongan, tanpa LLM):"
+)
+SKILL_STATS_LINE = "- {name}: {count} lowongan (contoh ID {ids})"
+SKILL_STATS_HAVE = "Yang sudah ada di CV-mu: {skills}."
+SKILL_STATS_EMPTY_MESSAGE = "Belum ada skill yang terbaca dari deskripsi lowongan di data kami."
+DATA_SOURCE_MESSAGE = (
+    "Jawaban Asisten berasal dari {total} lowongan kerja 2025 di aplikasi ini, bukan dari "
+    "internet. Jumlah dan gaji dihitung dengan SQL, lowongan dicari dari kemiripan deskripsinya, "
+    "dan skill dihitung dari kosakata skill di deskripsi lowongan. Angka ID di jawaban adalah ID "
+    "lowongan: ketik ID itu di halaman Cari Lowongan untuk membuka lowongannya."
+)
+DATA_FAILED_MESSAGE = (
+    "Maaf, data lowongan tidak bisa dibaca saat ini. Coba lagi beberapa saat lagi."
+)
 
 # ---------------------------------------------------------------------------
 # Profil CV (cv/profile.py, 1 panggilan LLM structured output; bukan agent)

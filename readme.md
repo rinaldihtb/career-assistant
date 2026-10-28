@@ -84,6 +84,7 @@ Streamlit (src/app.py, src/pages, src/components)
                                          └─ SupervisorAgent (src/agents/supervisor_agent_graph.py)
                                               planner -> penjaga rute -> maks 3 worker paralel -> synthesize
                                               worker: rag | sql | cv_match | cv_gap | cv_role
+                                              tanpa planner: skill_stats | data_source
 ```
 
 | Folder | Isi |
@@ -106,6 +107,8 @@ Aturan agent:
   `LIMIT` diberi `LIMIT`.
 - RAG hanya boleh mengutip lowongan kandidat dengan format `[ID:x]`; ID lain dibuang.
 - Worker CV tidak memanggil LLM; `cv_role` memakai 1 embedding nama posisi.
+- Pertanyaan skill pasar (tanpa rujukan diri, posisi, atau kota) dan pertanyaan asal data
+  dijawab dari indeks skill seluruh lowongan tanpa planner dan tanpa LLM.
 - Agent tidak melempar exception: kegagalan menjadi pesan aman di `answer` dan detail di `error`.
 
 ## Data CV

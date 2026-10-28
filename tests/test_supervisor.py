@@ -12,6 +12,7 @@ from conftest import ScriptedLLM, agent_script, plan_reply, tool_call
 
 from src.agents.prompts import (
     CV_ROLE_FAILED_MESSAGE,
+    DATA_SOURCE_MESSAGE,
     SUPERVISOR_CHAT_CV_NOTE,
     SUPERVISOR_CHAT_SYSTEM,
     SUPERVISOR_CLARIFY_MESSAGE,
@@ -717,3 +718,75 @@ def test_out_of_scope_without_cv_is_not_changed_by_career_move(make_repository):
 
     assert state["response"] == "out_of_scope"
     assert state["result"].answer == "Mau ke bidang apa?"
+
+
+# --- Rute data tanpa planner -----------------------------------------------------
+
+MARKET_Q = "skill apa saja yang paling banyak dicari oleh perusahaan atau recruiter?"
+SOURCE_Q = "berikan referensi darimana informasi tersebut anda dapatkan."
+
+
+def _no_llm(messages):
+    raise AssertionError("LLM tidak boleh dipanggil")
+
+
+@pytest.mark.parametrize("cv, have", [(CV, True), ({}, False)])
+def test_market_skill_question_counts_all_jobs_without_llm(
+    make_repository, jobs_db, monkeypatch, cv, have
+):
+    monkeypatch.setenv("DB_SQLITE_PATH", str(jobs_db))
+    llm = ScriptedLLM(reply=_no_llm)
+    state = _invoke(llm, make_repository(), MARKET_Q, **cv)
+
+    result = state["result"]
+    assert llm.received == []
+    assert state["subtasks"] == [{"agent": "skill_stats", "question": MARKET_Q}]
+    assert result.source == "data"
+    assert result.usage.llm_calls == 0
+    assert "di 6 lowongan data kami" in result.answer
+    assert "- Python: 2 lowongan (contoh ID 1, 5)" in result.answer
+    assert ("Yang sudah ada di CV-mu: SQL." in result.answer) is have
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "skill apa yang paling dicari di Surabaya?",
+        "Skill apa yang paling sering diminta tapi belum saya punya?",
+        "skill apa yang paling dicari untuk data analyst?",
+    ],
+)
+def test_market_skill_with_place_self_or_role_goes_to_planner(make_repository, question):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(("cv_gap", "Skill CV"), schema="CVPlan")))
+    state = _invoke(llm, make_repository(), question, **CV)
+
+    assert llm.received
+    assert [task["agent"] for task in state["subtasks"]] == ["cv_gap"]
+
+
+def test_source_follow_up_explains_data_without_llm(make_repository, jobs_db, monkeypatch):
+    monkeypatch.setenv("DB_SQLITE_PATH", str(jobs_db))
+    llm = ScriptedLLM(reply=_no_llm)
+    history = [
+        {"role": "user", "content": MARKET_Q},
+        {"role": "assistant", "content": "- Python: 2 lowongan (contoh ID 1, 5)"},
+    ]
+    state = _invoke(llm, make_repository(), SOURCE_Q, history, **CV)
+
+    assert llm.received == []
+    assert state["result"].answer == DATA_SOURCE_MESSAGE.format(total=6)
+
+
+@pytest.mark.parametrize(
+    "question, history",
+    [
+        (SOURCE_Q, ()),
+        ("Lowongan HRD sumber daya manusia di Surabaya", ({"role": "user", "content": "Halo"},)),
+    ],
+)
+def test_source_pattern_needs_history_and_skips_human_resources(make_repository, question, history):
+    llm = ScriptedLLM(reply=agent_script(plan=plan_reply(response="out_of_scope"), chat="Halo."))
+    state = _invoke(llm, make_repository(), question, history)
+
+    assert llm.received
+    assert state.get("subtasks", []) == []

@@ -20,7 +20,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 from pydantic import BaseModel
 
-from src.agents.cv_agent import run_cv_agent
+from src.agents.cv_agent import run_cv_agent, run_data_agent
 from src.agents.prompts import (
     SUPERVISOR_CHAT_CV_NOTE,
     SUPERVISOR_CHAT_SYSTEM,
@@ -65,6 +65,8 @@ AGENT_NODES = {
     "cv_match": "cv_agent",
     "cv_gap": "cv_agent",
     "cv_role": "cv_agent",
+    "skill_stats": "cv_agent",
+    "data_source": "cv_agent",
 }
 # CV fiktif dengan skill terbanyak di set eval punya 15 skill; profil ringkas tetap < 150 token.
 MAX_PROFILE_SKILLS = 15
@@ -96,6 +98,27 @@ _MATCH_REQUEST = re.compile(r"\b(?:cocok|pas|sesuai|rekomendasi\w*)\b", re.IGNOR
 # utuh sebagai pertanyaan cv_role walau diminta nama posisi (C10-02, C10-03, C13-01).
 _ROLE_TARGET = re.compile(
     r"\b(?:menjadi|jadi|sebagai|ke\s+bidang|ke\s+posisi|beralih\s+ke|pindah\s+ke)\s+(?P<role>.+)$",
+    re.IGNORECASE,
+)
+# Pertanyaan skill pasar ("skill paling sering diminta recruiter") tanpa rujukan diri, posisi,
+# atau kota (_PERSONAL_OR_ROLE, lokasi database). Planner menjawab C12 dengan skill gap 10 lowongan
+# CV, unsupported, refuse, atau rag di 38 dari 38 run; statistik seluruh lowongan tanpa LLM.
+_MARKET_SKILL = re.compile(
+    r"\b(?:skills?|keahlian|kemampuan|software|tools?)\b.*\b(?:paling|sering|banyak)\b"
+    r".*\b(?:dicari|diminta|dibutuhkan)\b",
+    re.IGNORECASE,
+)
+_PERSONAL_OR_ROLE = re.compile(
+    r"\b(?:saya|aku|gue|gw|cv|untuk|bagi|posisi|bidang|role|jadi|menjadi|sebagai)\b|\w+ku\b",
+    re.IGNORECASE,
+)
+# Pertanyaan lanjutan tentang asal data jawaban; planner membalasnya out_of_scope ("Maaf, saya
+# tidak dapat memberikan referensi") walau semua jawaban berasal dari data lowongan aplikasi.
+# "sumber daya" dikecualikan karena berarti bidang SDM.
+_SOURCE_QUESTION = re.compile(
+    r"\breferensi\b|\bsumber(?!\s+daya)\w*\b"
+    r"|\bdari\s*mana\b.*\b(?:informasi|jawaban|datanya|data\s+(?:ini|itu|tersebut))\b"
+    r"|\b(?:informasi|jawaban|datanya|data\s+(?:ini|itu|tersebut))\b.*\bdari\s*mana\b",
     re.IGNORECASE,
 )
 # Pindah karier tanpa posisi tujuan; planner menjawabnya cv_match di C13-01 (1 dari 4 run).
@@ -419,10 +442,20 @@ class SupervisorAgent:
         (``planner_messages``); dengan ``profile`` skemanya ``CVPlan``. Sub-tugas di atas
         ``MAX_SUBTASKS`` masuk ``skipped`` agar pengguna diberi tahu bagian yang belum
         dijawab. Dengan CV, balasan out_of_scope untuk pernyataan pindah ke posisi yang disebut
-        diganti satu sub-tugas ``cv_role`` (``career_move_role``).
+        diganti satu sub-tugas ``cv_role`` (``career_move_role``). Pertanyaan skill pasar dan
+        asal data dijawab tanpa planner (``direct_subtask``).
         """
         question, history, _ = _chat_context(state.get("messages", []))
         profile = state.get("profile")
+        direct = self.direct_subtask(question, has_history=history != SUPERVISOR_NO_HISTORY)
+        if direct is not None:
+            return {
+                "response": "answer",
+                "subtasks": [direct],
+                "skipped": [],
+                "declined": [],
+                "planner_usage": LLMUsage(),
+            }
         messages = planner_messages(question, history, profile)
         schema = Plan if profile is None else CVPlan
         fallback: dict = {"response": "clarify", "subtasks": [], "skipped": [], "declined": []}
@@ -463,6 +496,23 @@ class SupervisorAgent:
             "declined": parsed_plan.declined,
             "planner_usage": usage,
         }
+
+    def direct_subtask(self, question: str, *, has_history: bool) -> dict[str, str] | None:
+        """Sub-tugas data tanpa planner untuk dua pola terukur, atau ``None``.
+
+        - Asal data jawaban, hanya sebagai pertanyaan lanjutan -> ``data_source``.
+        - Skill pasar tanpa rujukan diri, posisi, atau kota -> ``skill_stats``. Jika lokasi
+          tidak bisa dibaca dari database, planner yang memutuskan.
+        """
+        if has_history and _SOURCE_QUESTION.search(question):
+            return {"agent": "data_source", "question": question}
+        if (
+            _MARKET_SKILL.search(question)
+            and not _PERSONAL_OR_ROLE.search(question)
+            and not self._mentions_place(question, default=True)
+        ):
+            return {"agent": "skill_stats", "question": question}
+        return None
 
     def align_subtasks(
         self, question: str, subtasks: list[dict[str, str]], profile: CVProfile | None
@@ -670,10 +720,12 @@ class SupervisorAgent:
         """
         index = state.get("worker_index")
         kind = state.get("worker_agent")
-        if index is None or kind not in ("cv_match", "cv_gap", "cv_role"):
+        if index is None or kind not in AGENT_NODES or AGENT_NODES[kind] != "cv_agent":
             return {"collected": []}
         profile = state.get("profile")
-        if kind == "cv_role":
+        if kind in ("skill_stats", "data_source"):
+            result = run_data_agent(kind=kind, profile=profile, db_path=sqlite_path())
+        elif kind == "cv_role":
             role = state.get("worker_question", "")
             result = run_cv_agent(
                 kind=kind, profile=profile, matches=self.match_role(role, profile), role=role

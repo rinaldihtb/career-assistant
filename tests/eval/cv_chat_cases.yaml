@@ -28,9 +28,8 @@
 #    cv_match/cv_gap di sini menampilkan lowongan posisi lama yang tidak ditanyakan.
 # K9 (v1.3) Kata "saya" dalam permintaan lowongan atau statistik berposisi jelas ("carikan saya
 #    lowongan akuntan") bukan permintaan hasil Cocokkan CV: tanpa cv_match/cv_gap, tanpa posisi
-#    tujuan dari profil. Pertanyaan skill pasar tanpa rujukan diri tidak boleh dijawab cv_match
-#    atau cv_role. Statistik skill seluruh lowongan belum ada, jadi cv_gap (berlabel "dari 10
-#    lowongan yang paling cocok dengan CV-mu"), rag, sql, atau unsupported diterima.
+#    tujuan dari profil. Pertanyaan skill pasar tanpa rujukan diri, posisi, atau kota dijawab
+#    skill_stats (v1.6): statistik skill seluruh lowongan, dipilih tanpa planner.
 # K10 (v1.3) Ingin pindah karier tanpa menyebut bidang tujuan -> out_of_scope (balasan
 #    menanyakan bidang tujuan), bukan lowongan posisi lama.
 # K11 (v1.5) "Yang paling cocok" di samping posisi dan kota ("gaji DA Jakarta + 1 yang paling
@@ -38,6 +37,8 @@
 #    memilih cv_match di 7 dari 7 run, juga dengan aturan prompt khusus yang menurunkan C12-02,
 #    dan pertanyaan pengguna tidak cukup untuk menyusun pertanyaan rag tanpa LLM. Menyaring
 #    hasil Cocokkan CV per posisi dan kota belum ada.
+# K12 (v1.6) Pertanyaan lanjutan tentang asal data jawaban ("referensi/sumber informasi ini
+#    dari mana") -> data_source: pesan tetap tentang data lowongan aplikasi, tanpa planner.
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
@@ -50,7 +51,7 @@
 # checks.standalone_none: tidak satu pun frasa ada di pertanyaan mandiri
 # Cek otomatis tanpa ditulis: cv_match -> ID = 5 teratas; cv_gap -> 3 skill kurang teratas
 # ada di jawaban; semua ID yang dikutip berasal dari sub-hasil agent.
-version: "1.5"
+version: "1.6"
 profiles: tests/eval/cv_chat_profiles.json
 cases:
   # --- C1: lowongan yang cocok dengan CV (K2) ---------------------------------
@@ -379,10 +380,7 @@ cases:
     category: C12
     cv: cv03
     question: skill apa yang sangat sering diminta oleh para recruiter?
-    expected:
-      agents: [cv_gap]
-      agents_alt: [[rag], [sql], []]
-      response_alt: [unsupported]
+    expected: {agents: [skill_stats]}
     checks:
       standalone_none: [hr, human resource]
 
@@ -390,10 +388,7 @@ cases:
     category: C12
     cv: cv04
     question: Software apa yang paling banyak dicari perusahaan di lowongan?
-    expected:
-      agents: [cv_gap]
-      agents_alt: [[rag], [sql], []]
-      response_alt: [unsupported]
+    expected: {agents: [skill_stats]}
     checks:
       standalone_none: [sales, marketing]
 
@@ -401,10 +396,7 @@ cases:
     category: C12
     cv: cv01
     question: skill paling sering diminta recruiter
-    expected:
-      agents: [cv_gap]
-      agents_alt: [[rag], [sql], []]
-      response_alt: [unsupported]
+    expected: {agents: [skill_stats]}
     checks:
       standalone_none: [data analyst]
 
@@ -413,10 +405,7 @@ cases:
     cv: cv01
     profile: {target_role: Fullstack Developer dan Data Analyst}
     question: skill paling sering diminta recruiter
-    expected:
-      agents: [cv_gap]
-      agents_alt: [[rag], [sql], []]
-      response_alt: [unsupported]
+    expected: {agents: [skill_stats]}
     checks:
       standalone_none: [fullstack, data analyst]
 
@@ -445,3 +434,13 @@ cases:
     cv: null
     question: Skill apa yang kurang dari CV saya?
     expected: {report_only: true, agents: []}
+
+  # --- C14: asal data jawaban (K12) ----------------------------------------------------
+  - id: C14-01
+    category: C14
+    cv: cv02
+    history:
+      - {role: user, content: "Skill apa yang paling banyak dicari?"}
+      - {role: assistant, content: "Skill yang paling sering disebut di 473 lowongan: ..."}
+    question: Sumber data jawaban tadi dari mana?
+    expected: {agents: [data_source]}

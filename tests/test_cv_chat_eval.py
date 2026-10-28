@@ -241,7 +241,7 @@ def test_case_file_is_consistent():
     ids = [item["id"] for item in cases]
 
     assert profiles_path == Path("tests/eval/cv_chat_profiles.json")
-    assert len(ids) == len(set(ids)) == 49
+    assert len(ids) == len(set(ids)) == 50
     for item in cases:
         assert item["cv"] in {"cv01", "cv02", "cv03", "cv04", "cv05", None}
         assert set(item.get("profile", {})) <= set(CVProfile.model_fields)

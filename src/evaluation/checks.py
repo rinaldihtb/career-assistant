@@ -28,7 +28,15 @@ _NUMBER = re.compile(
 _RUPIAH = re.compile(r"rp\s?\d|\d\s*(juta|jt)\b", re.IGNORECASE)
 RELATIVE_TOLERANCE = 0.01
 
-AGENT_LLM_BUDGET = {"sql": 3, "rag": 1, "cv_match": 0, "cv_gap": 0, "cv_role": 0}
+AGENT_LLM_BUDGET = {
+    "sql": 3,
+    "rag": 1,
+    "cv_match": 0,
+    "cv_gap": 0,
+    "cv_role": 0,
+    "skill_stats": 0,
+    "data_source": 0,
+}
 
 
 @dataclass

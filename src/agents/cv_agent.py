@@ -12,10 +12,15 @@ Dua jenis sub-tugas dari planner (``SubTask.agent``):
   pencocokannya (``match_role``, 1 embedding) dihitung supervisor dan diteruskan lewat
   ``matches``; jawabannya tetap template.
 
+Dua jenis sub-tugas data (``run_data_agent``), dipilih supervisor tanpa planner dan tidak
+butuh CV: ``skill_stats`` (skill yang paling sering disebut di seluruh lowongan) dan
+``data_source`` (asal data jawaban). Keduanya membaca indeks skill yang di-cache per proses.
+
 Jawaban disusun dari template, bukan LLM: data sudah dihitung saat CV dicocokkan, dan teks
 pertanyaan tidak mengubah hasil. Profil hanya dipakai untuk label posisi dan pengalaman.
 """
 
+from pathlib import Path
 from typing import Literal
 
 from src.agents.prompts import (
@@ -40,18 +45,28 @@ from src.agents.prompts import (
     CV_ROLE_SKILLS,
     CV_SOURCE,
     CV_SOURCE_WITH_LABEL,
+    DATA_FAILED_MESSAGE,
+    DATA_SOURCE_MESSAGE,
+    SKILL_STATS_EMPTY_MESSAGE,
+    SKILL_STATS_HAVE,
+    SKILL_STATS_INTRO,
+    SKILL_STATS_LINE,
 )
 from src.cv.gap import SkillCount, compute_skill_gap
-from src.cv.match import JobMatch, MatchConfig, MatchResult
+from src.cv.match import JobMatch, JobSkillIndex, MatchConfig, MatchResult, load_job_skill_index
 from src.cv.profile import CVProfile
+from src.cv.skills import build_cv_skills
 from src.models.agent import AgentResult
 
 CVKind = Literal["cv_match", "cv_gap", "cv_role"]
+DataKind = Literal["skill_stats", "data_source"]
 
 # Halaman Cocokkan CV menampilkan 10 lowongan; di chat 5 cukup sebagai ringkasan, dan
 # kartu lowongan di chat lebih tinggi daripada baris teks.
 CV_MATCH_LIMIT = 5
 CV_GAP_LIMIT = 5
+SKILL_STATS_LIMIT = 10
+SKILL_STATS_EXAMPLES = 3
 CV_HAVE_LIMIT = 3
 MAX_MATCHED_SKILLS = 3
 
@@ -96,6 +111,46 @@ def run_cv_agent(
         )
     except Exception as exc:  # noqa: BLE001 - kontrak agent: tidak pernah melempar exception
         return AgentResult(answer=CV_FAILED_MESSAGE, source="cv", error=f"CV agent error: {exc}")
+
+
+def run_data_agent(*, kind: DataKind, profile: CVProfile | None, db_path: str) -> AgentResult:
+    """Jawab ``skill_stats`` atau ``data_source`` dari indeks skill lowongan, tanpa LLM.
+
+    Returns:
+        ``AgentResult`` (``source="data"`` untuk statistik, ``"general"`` untuk asal data).
+        Tidak pernah melempar exception; kegagalan membaca database ada di ``error``.
+    """
+    try:
+        index = load_job_skill_index(str(Path(db_path).resolve()))
+        if kind == "data_source":
+            answer = DATA_SOURCE_MESSAGE.format(total=len(index.vocab))
+            return AgentResult(answer=answer, source="general")
+        return AgentResult(answer=skill_stats_answer(index, profile), source="data")
+    except Exception as exc:  # noqa: BLE001 - kontrak agent: tidak pernah melempar exception
+        return AgentResult(
+            answer=DATA_FAILED_MESSAGE, source="general", error=f"Data agent error: {exc}"
+        )
+
+
+def skill_stats_answer(index: JobSkillIndex, profile: CVProfile | None) -> str:
+    """Skill terbanyak di seluruh lowongan, contoh ID terkecil, dan yang sudah ada di CV."""
+    top = sorted(index.frequency.items(), key=lambda item: (-item[1], item[0]))
+    top = top[:SKILL_STATS_LIMIT]
+    if not top:
+        return SKILL_STATS_EMPTY_MESSAGE
+    lines = [SKILL_STATS_INTRO.format(total=len(index.vocab))]
+    job_ids = sorted(index.vocab)
+    for name, count in top:
+        ids = [job_id for job_id in job_ids if name in index.vocab[job_id]]
+        examples = ", ".join(str(job_id) for job_id in ids[:SKILL_STATS_EXAMPLES])
+        lines.append(SKILL_STATS_LINE.format(name=name, count=count, ids=examples))
+    parts = ["\n".join(lines)]
+    if profile is not None:
+        owned = build_cv_skills(profile.skills).vocab
+        have = [name for name, _ in top if name in owned]
+        if have:
+            parts.append(SKILL_STATS_HAVE.format(skills=", ".join(have)))
+    return "\n\n".join(parts)
 
 
 def match_answer(profile: CVProfile | None, shown: list[JobMatch], *, total: int) -> str:
