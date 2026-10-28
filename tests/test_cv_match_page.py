@@ -26,7 +26,6 @@ from src.components.cv_match import (
     size_label,
     skill_chips,
     skill_lines,
-    usage_caption,
 )
 from src.cv.ingest import CV_STATE_KEY, IngestResult
 from src.cv.match import JobMatch, MatchConfig, MatchResult
@@ -91,7 +90,6 @@ def state(**overrides) -> dict:
         "file_name": "cv_budi.pdf",
         "file_size": 186_000,
         "pages": 1,
-        "usage": USAGE,
         "embedding_calls": 1,
     }
     data.update(overrides)
@@ -221,7 +219,6 @@ def test_result_cards_show_score_skills_detail_and_letter_button(calls):
     assert not app.button(key="cv_letter_1").disabled
     assert app.expander[0].label == "Lihat detail lowongan"
     assert any("Analisis data penjualan" in line for line in markdown)  # deskripsi job 1
-    assert usage_caption(state()) in [caption.value for caption in app.caption]
 
 
 def test_target_change_bumps_version_and_rematches_once(calls):

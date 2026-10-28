@@ -25,6 +25,7 @@ from src.components.assistant_chat import PENDING_KEY
 from src.components.cv_match import load_dependencies
 from src.components.job_description import escape_markdown
 from src.components.navigation import ASSISTANT_PAGE, CV_PAGE
+from src.containers import traced_llm
 from src.cv.gap import SkillCount, SkillGap, compute_skill_gap
 from src.cv.ingest import CV_STATE_KEY
 from src.cv.match import MatchResult
@@ -132,7 +133,6 @@ def _render_plan(state: dict[str, Any], gap: SkillGap) -> None:
             type="primary",
             key="gap_download",
         )
-        st.caption(plan_usage_caption(cached))
 
 
 def _generate(state: dict[str, Any], gap: SkillGap) -> None:
@@ -146,8 +146,9 @@ def _generate(state: dict[str, Any], gap: SkillGap) -> None:
         logger.exception("Gagal memuat dependency rencana belajar")
         st.error(DEPENDENCY_ERROR)
         return
+    llm = traced_llm(deps.llm, "cv_plan")
     with st.spinner("Menyusun rencana belajar..."):
-        result = generate_learning_plan(state["profile"], gap, llm=deps.llm)
+        result = generate_learning_plan(state["profile"], gap, llm=llm)
     state[PLAN_STATE_KEY] = {"version": state["version"], "result": result}
     st.rerun()
 
@@ -188,9 +189,3 @@ def gap_caption(gap: SkillGap) -> str:
 def week_label(number: int, week: PlanWeek) -> str:
     """Label checkbox minggu, misalnya "Minggu 1 — Power BI dasar"."""
     return f"Minggu {number} — {escape_markdown(week.title)}"
-
-
-def plan_usage_caption(result: LearningPlanResult) -> str:
-    """Biaya rencana yang sudah dibuat untuk versi profil ini."""
-    tokens = f"{result.usage.total_tokens:,}".replace(",", ".")
-    return f"Biaya: {result.usage.llm_calls} panggilan LLM ({tokens} token) untuk rencana ini."

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import ValidationError
 
-from src.containers import get_supervisor_agent
+from src.containers import get_supervisor_agent, get_trace_callbacks
 from src.cv.match import MatchResult
 from src.cv.profile import CVProfile
 
@@ -37,9 +37,16 @@ def chat_assistant(
         raise HTTPException(status_code=422, detail="history dan user_message wajib diisi.")
     profile, matches = _cv_context(payload.get("cv"))
 
+    callbacks = get_trace_callbacks()
     state = get_supervisor_agent().graph.invoke(
-        {"messages": [*history, user_message], "profile": profile, "matches": matches}
+        {"messages": [*history, user_message], "profile": profile, "matches": matches},
+        config={"callbacks": callbacks},
     )
+    if callbacks:
+        from langfuse import get_client
+
+        # Lambda membekukan proses setelah respons, jadi span yang masih antre dikirim sekarang.
+        get_client().flush()
     return {"result": state["result"].model_dump(mode="json")}
 
 

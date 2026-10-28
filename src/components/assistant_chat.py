@@ -14,7 +14,6 @@ kerja, pencapaian, dan teks CV tidak dikirim. Banner di atas chat menunjukkan ap
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -67,21 +66,6 @@ DEFAULT_API_URL = "http://localhost:8000"
 API_KEY_ENV = "ASSISTANT_API_KEY"
 # (connect, read) detik; jawaban terlama di set eval 14 detik.
 API_TIMEOUT = (5, 90)
-SOURCE_LABELS = {
-    "rag": "Pencarian lowongan (RAG)",
-    "sql": "Statistik data (SQL)",
-    "general": "Pesan umum",
-    "multi": "Gabungan beberapa agent",
-    "cv": "Hasil Cocokkan CV",
-    "data": "Statistik skill seluruh lowongan",
-}
-STEP_LABELS = {
-    "planner": "Planner: pecah pertanyaan",
-    "sql_generate": "SQL: tulis query",
-    "sql_retry": "SQL: perbaiki query",
-    "sql_answer": "SQL: rangkum hasil",
-    "rag_answer": "RAG: jawab dari kandidat",
-}
 # Label catatan di kartu: alasan relevansi (RAG), fakta dari query (SQL, misalnya gaji), atau
 # skor dan skill yang cocok (CV).
 NOTE_LABELS = {"rag": "Kenapa cocok", "sql": "Keterangan", "cv": "Kecocokan"}
@@ -136,8 +120,8 @@ def _answer(question: str, messages: list[dict[str, Any]], cv: dict[str, Any] | 
     """Kirim pertanyaan ke API, tampilkan jawaban, lalu simpan ke riwayat.
 
     ``history`` diambil sebelum pertanyaan ditambahkan agar pertanyaan tidak terkirim
-    dua kali. ``AgentResult`` dan durasi ikut disimpan agar kartu dan detail LLM tetap
-    tampil saat rerun. Jika API gagal, pesan error tampil dan pertanyaan tetap di riwayat.
+    dua kali. ``AgentResult`` ikut disimpan agar kartu tetap tampil saat rerun. Jika API
+    gagal, pesan error tampil dan pertanyaan tetap di riwayat.
     CV aktif dibaca saat bertanya, jadi koreksi profil di Cocokkan CV langsung berlaku.
     """
     history = [{"role": message["role"], "content": message["content"]} for message in messages]
@@ -147,16 +131,14 @@ def _answer(question: str, messages: list[dict[str, Any]], cv: dict[str, Any] | 
 
     with st.chat_message("assistant"):
         with st.spinner("Mencari jawaban..."):
-            start = time.perf_counter()
             try:
                 result = ask_assistant_api(history, user_message, cv_payload(cv))
             except (requests.RequestException, KeyError, TypeError, ValueError):
                 logger.exception("Gagal memanggil Chat Assistant API")
                 st.error(API_ERROR)
                 return
-            seconds = time.perf_counter() - start
             display = prepare_display(result)
-        _render_result(result, display, seconds)
+        _render_result(result, display)
     if result.error:
         logger.warning("Agent %s error: %s", result.source, result.error)
     messages.append(
@@ -165,7 +147,6 @@ def _answer(question: str, messages: list[dict[str, Any]], cv: dict[str, Any] | 
             "content": result.answer,
             "result": result,
             "display": display,
-            "seconds": seconds,
         }
     )
 
@@ -178,8 +159,8 @@ def ask_assistant_api(
     """Kirim satu giliran chat ke ``POST /chat-assistant`` dan kembalikan ``AgentResult``-nya.
 
     ``cv`` adalah hasil ``cv_payload`` (``None`` tanpa CV). Respons API berbentuk
-    ``{"result": AgentResult.model_dump(mode="json")}``, jadi job_ids, rows, parts, dan usage
-    ikut kembali untuk kartu dan detail LLM.
+    ``{"result": AgentResult.model_dump(mode="json")}``, jadi job_ids, rows, dan parts ikut
+    kembali untuk kartu.
 
     Raises:
         requests.RequestException: API tidak terjangkau, timeout, atau status bukan 2xx.
@@ -242,11 +223,11 @@ def _render_message(message: dict[str, Any]) -> None:
         if result is None:
             st.markdown(message["content"])
         else:
-            _render_result(result, message["display"], message.get("seconds"))
+            _render_result(result, message["display"])
 
 
-def _render_result(result: AgentResult, display: Display, seconds: float | None) -> None:
-    """Isi bubble asisten: setiap bagian jawaban, lalu satu detail LLM untuk total.
+def _render_result(result: AgentResult, display: Display) -> None:
+    """Isi bubble asisten: setiap bagian jawaban.
 
     Jawaban gabungan dirender per bagian dengan ``_render_body`` yang sama,
     sehingga kartu SQL dan RAG tetap memakai aturan masing-masing.
@@ -256,7 +237,6 @@ def _render_result(result: AgentResult, display: Display, seconds: float | None)
             _render_body(part, part_display)
     else:
         _render_body(result, display)
-    _render_llm_usage(result, seconds)
 
 
 def _render_body(result: AgentResult, display: Display) -> None:
@@ -296,41 +276,6 @@ def _render_job_card(job: dict[str, Any], note: str | None, note_label: str) -> 
         if description:
             with st.expander("Lihat deskripsi lengkap"):
                 st.markdown(description_to_markdown(description))
-
-
-def _render_llm_usage(result: AgentResult, seconds: float | None) -> None:
-    """Expander rincian setiap panggilan LLM: langkah, model, dan token."""
-    usage = result.usage
-    label = (
-        f"Detail: {SOURCE_LABELS.get(result.source, result.source)} | "
-        f"{usage.llm_calls} panggilan LLM | {_number(usage.total_tokens)} token"
-    )
-    if seconds is not None:
-        label += f" | {seconds:.1f} detik"
-    with st.expander(label):
-        if usage.calls:
-            st.dataframe(
-                [
-                    {
-                        "Langkah": STEP_LABELS.get(call.step, call.step),
-                        "Model": call.model,
-                        "Input": call.input_tokens,
-                        "Output": call.output_tokens,
-                        "Total": call.total_tokens,
-                    }
-                    for call in usage.calls
-                ],
-                hide_index=True,
-            )
-        else:
-            st.caption("Tidak ada panggilan LLM.")
-        rag_searches = sum(part.source == "rag" for part in result.parts or [result])
-        if rag_searches:
-            embedding_model = os.getenv("LLM_EMBEDDING_MODEL", "-")
-            st.caption(
-                f"Ditambah {rag_searches} embedding pertanyaan ({embedding_model}) untuk "
-                "pencarian di Qdrant. Jumlah tokennya tidak dilaporkan oleh API embedding."
-            )
 
 
 # --- Helper tanpa Streamlit (bisa dites langsung) ----------------------------
@@ -420,8 +365,3 @@ def split_rag_answer(answer: str) -> tuple[str, dict[int, str]]:
         _, separator, reason = rest.partition("): ")
         reasons[int(match.group(1))] = (reason if separator else rest).strip(" -:")
     return "\n".join(intro_lines).strip(), reasons
-
-
-def _number(value: int) -> str:
-    """Format angka Indonesia: 2400 -> "2.400"."""
-    return f"{value:,}".replace(",", ".")

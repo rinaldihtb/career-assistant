@@ -28,6 +28,7 @@ from src.components.cv_match import (
 )
 from src.components.job_description import description_to_markdown, escape_markdown
 from src.components.navigation import CV_PAGE
+from src.containers import traced_llm
 from src.cv.ingest import CV_STATE_KEY
 from src.cv.letter import (
     LANGUAGE_NAMES,
@@ -132,7 +133,7 @@ def _render_fit(match: JobMatch) -> None:
 
 
 def _render_letter(state: dict[str, Any], match: JobMatch, description: str | None) -> None:
-    """Surat yang bisa diedit (kiri) dan pengaturan, unduh, serta biaya (kanan).
+    """Surat yang bisa diedit (kiri) dan pengaturan serta unduh (kanan).
 
     Tanpa surat untuk versi profil ini, surat dibuat dulu (1 LLM) dengan pengaturan aktif.
     """
@@ -226,9 +227,10 @@ def _generate(
         logger.exception("Gagal memuat dependency surat lamaran")
         st.error(DEPENDENCY_ERROR)
         return
+    llm = traced_llm(deps.llm, "cv_letter")
     with st.spinner("Menulis surat lamaran..."):
         result = generate_cover_letter(
-            state["profile"], match, description, llm=deps.llm, settings=settings
+            state["profile"], match, description, llm=llm, settings=settings
         )
     letters = state.setdefault(LETTERS_KEY, {})
     previous = letters.get(match.job_id)
@@ -309,14 +311,9 @@ def contact_line(profile: CVProfile) -> str:
 
 
 def letter_caption(entry: dict[str, Any]) -> str:
-    """Pengaturan dan biaya surat yang sedang tampil."""
+    """Pengaturan surat yang sedang tampil."""
     settings: LetterSettings = entry["settings"]
-    usage = entry["result"].usage
-    tokens = f"{usage.total_tokens:,}".replace(",", ".")
-    return (
-        f"{LANGUAGE_NAMES[settings.language]} · {LENGTH_LABELS[settings.words]} · "
-        f"{usage.llm_calls} panggilan LLM ({tokens} token)."
-    )
+    return f"{LANGUAGE_NAMES[settings.language]} · {LENGTH_LABELS[settings.words]}."
 
 
 def _author(full_name: str | None) -> str:

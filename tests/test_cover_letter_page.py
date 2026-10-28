@@ -81,7 +81,6 @@ def state(**overrides) -> dict:
         "file_name": "cv_budi.pdf",
         "file_size": 186_000,
         "pages": 1,
-        "usage": LLMUsage(llm_calls=1),
         "embedding_calls": 1,
         LETTER_JOB_KEY: 1,
     }
@@ -169,7 +168,7 @@ def test_opening_writes_letter_once_with_default_settings(letters):
     assert "Perihal: Lamaran Pekerjaan sebagai Data Analyst\n\nDengan hormat,\n\n" in text
     assert "Dengan hormat,\n\nSaya melamar posisi ini." in text
     assert text.endswith("Hormat saya,\nBudi Contoh")
-    assert "Bahasa Indonesia · Standar · 1 panggilan LLM (1.620 token)." in _texts(app)
+    assert "Bahasa Indonesia · Standar." in _texts(app)
     assert app.selectbox(key=WORDS_KEY).options == ["Singkat", "Standar", "Panjang"]
     assert not app.download_button(key="cv_letter_download").disabled
     assert not app.download_button(key="cv_letter_download_pdf").disabled
@@ -310,10 +309,10 @@ def test_contact_line_skips_empty_parts():
     assert contact_line(CVProfile()) == ""
 
 
-def test_letter_caption_shows_settings_and_cost():
+def test_letter_caption_shows_settings():
     entry = {
         "settings": LetterSettings(language="en", words=150),
         "result": CoverLetterResult(letter=LETTER, usage=LETTER_USAGE),
     }
 
-    assert letter_caption(entry) == "English · Singkat · 1 panggilan LLM (1.620 token)."
+    assert letter_caption(entry) == "English · Singkat."

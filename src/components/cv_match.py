@@ -19,6 +19,7 @@ from typing import Any
 import streamlit as st
 
 from src.components.job_description import description_to_markdown, escape_markdown
+from src.containers import traced_llm
 from src.cv.ingest import CV_STATE_KEY, IngestResult, ingest_cv
 from src.cv.match import JobMatch, MatchConfig, MatchResult, match_jobs, profile_query_text
 from src.cv.profile import MAX_SKILLS, CVProfile, EducationLevel, unique_skills
@@ -142,7 +143,7 @@ def _ingest_and_match(uploaded: Any) -> None:
     if deps is None:
         return
     with st.spinner("Membaca CV..."):
-        ingest = ingest_cv(uploaded.getvalue(), llm=deps.llm)
+        ingest = ingest_cv(uploaded.getvalue(), llm=traced_llm(deps.llm, "cv_profile"))
     if ingest.profile is None:
         st.error(ingest.error)
         return
@@ -216,7 +217,6 @@ def _render_profile_panel(state: dict[str, Any]) -> None:
             skills=skills,
         )
         _apply_edits(state, edited)
-    st.caption(usage_caption(st.session_state[CV_STATE_KEY]))
 
 
 def _apply_edits(state: dict[str, Any], edited: CVProfile) -> None:
@@ -343,7 +343,6 @@ def new_cv_state(
         "file_name": file_name,
         "file_size": file_size,
         "pages": ingest.pages,
-        "usage": ingest.usage,
         "embedding_calls": matches.embedding_calls,
     }
 
@@ -431,17 +430,6 @@ def size_label(size: int) -> str:
     if size < 1024 * 1024:
         return f"{max(1, round(size / 1024))} KB"
     return f"{size / (1024 * 1024):.1f} MB".replace(".", ",")
-
-
-def usage_caption(state: dict[str, Any]) -> str:
-    """Biaya yang sudah dipakai CV ini: LLM saat membaca, embedding saat mencocokkan."""
-    usage = state["usage"]
-    tokens = f"{usage.total_tokens:,}".replace(",", ".")
-    return (
-        f"Biaya: {usage.llm_calls} panggilan LLM ({tokens} token) untuk membaca CV · "
-        f"{state['embedding_calls']} embedding untuk mencocokkan · versi profil "
-        f"{state['version']}."
-    )
 
 
 def _clean(text: str | None) -> str | None:

@@ -27,6 +27,7 @@ from src.agents.prompts import (
     SQL_GENERATION_SYSTEM,
     SUPERVISOR_PLANNER_SYSTEM,
 )
+from src.containers import get_trace_callbacks
 from src.repositories.job_repository import JobRepository
 
 USAGE = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
@@ -64,6 +65,16 @@ SAMPLE_JOBS = [
     (6, "HR Generalist", "PT Zeta", "Jakarta Barat, Jakarta Raya", "Full time",
      "Rekrutmen dan administrasi karyawan.", 7_000_000, 7_000_000, "month", "IDR", "OPEN"),
 ]  # fmt: skip
+
+
+@pytest.fixture(autouse=True)
+def no_langfuse(monkeypatch):
+    """Langfuse mati di setiap test walaupun test ``src/app.py`` memuat ``.env``.
+
+    Nilai kosong, bukan dihapus, karena ``load_dotenv`` tidak menimpa variabel yang sudah ada.
+    """
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "")
+    get_trace_callbacks.cache_clear()
 
 
 @pytest.fixture

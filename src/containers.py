@@ -5,7 +5,11 @@ dipanggil pertama kali, sehingga modul ini bisa di-import tanpa .env dan tanpa
 jaringan. Test mengganti fungsi di modul pemakainya dengan dependency palsu.
 """
 
+import os
 from functools import cache
+
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.language_models import BaseChatModel
 
 from src.agents.rag_agent import RagAgent
 from src.agents.sql_agent import SqlAgent
@@ -33,3 +37,31 @@ def get_supervisor_agent() -> SupervisorAgent:
         rag_agent=RagAgent(LLM_MODEL, job_repository).create_rag_agent(),
         sql_agent=SqlAgent(LLM_MODEL, job_repository).create_sql_agent(),
     )
+
+
+@cache
+def get_trace_callbacks() -> list[BaseCallbackHandler]:
+    """Callback Langfuse untuk ``config`` LangChain; kosong jika ``LANGFUSE_PUBLIC_KEY`` kosong.
+
+    Input, output, dan metadata setiap observasi dikosongkan sebelum dikirim karena state graph
+    dan prompt bisa memuat profil serta kontak CV. Langfuse hanya menerima nama langkah, model,
+    token, dan latensi.
+    """
+    if not os.getenv("LANGFUSE_PUBLIC_KEY"):
+        return []
+    from langfuse import Langfuse
+    from langfuse.langchain import CallbackHandler
+
+    # Client dibuat lebih dulu agar CallbackHandler memakai client yang sama beserta mask-nya.
+    Langfuse(mask=lambda *, data, **_: None)
+    return [CallbackHandler()]
+
+
+def traced_llm(llm: BaseChatModel, step: str) -> BaseChatModel:
+    """Salinan ``llm`` yang tercatat di Langfuse dengan nama ``step``; ``llm`` jika tidak aktif.
+
+    LangChain menyimpan serialisasi model (termasuk nama) saat pemanggilan pertama dan salinan
+    ikut membawanya, jadi ``llm`` sebaiknya model yang tidak dipanggil langsung.
+    """
+    callbacks = get_trace_callbacks()
+    return llm.model_copy(update={"callbacks": callbacks, "name": step}) if callbacks else llm
