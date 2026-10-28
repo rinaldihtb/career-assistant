@@ -1,128 +1,113 @@
 # Career Assistant
 
-Asisten karier untuk pencari kerja Indonesia berbasis ±473 lowongan kerja 2025.
-Multi-agent: supervisor + RAG agent + SQL agent, REST API, dan UI Streamlit.
+Asisten karier untuk pencari kerja Indonesia berbasis 473 lowongan kerja 2025 (SQLite + Qdrant).
+UI Streamlit, API FastAPI, dan supervisor LangGraph yang membagi pertanyaan ke agent SQL, RAG,
+dan CV.
+
+| Halaman | Isi | LLM |
+|---|---|---|
+| Cari Lowongan | Kata kunci dan filter lokasi, tipe kerja, gaji, mode kerja | tidak |
+| Cocokkan CV | Upload CV PDF, profil bisa dikoreksi, 10 lowongan paling cocok | 1 panggilan per CV, 1 embedding per pencocokan |
+| Skill Gap | Skill yang paling sering diminta lowongan teratas dan belum ada di CV, rencana belajar 4 minggu | 1 panggilan untuk rencana |
+| Surat Lamaran | Surat untuk satu lowongan, bisa diedit, unduh PDF atau DOCX | 1 panggilan |
+| Asisten Karier | Chat tentang lowongan, dengan atau tanpa CV aktif | planner 1 + per agent; jumlahnya tampil di bawah jawaban |
+
+## Persiapan
+
+```bash
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env
+```
+
+Isi `OPENAI_API_KEY`, `QDRANT_URL`, dan `QDRANT_API_KEY` di `.env`; variabel lain sudah berisi
+nilai default. `data/database.sqlite` sudah ada di repo. Koleksi Qdrant cukup diisi sekali per
+cluster dengan `make seed-vector` (butuh embedding OpenAI).
 
 ## Menjalankan
 
+Lokal, dua terminal:
+
 ```bash
-source venv/bin/activate
-pip install -r requirements-dev.txt
+make api
+```
+
+```bash
 make run
 ```
 
-Perintah lain: `make help`.
+Streamlit di http://localhost:8501. Halaman Asisten memanggil API di `ASSISTANT_API_URL`
+(default `http://localhost:8000`); dokumentasi API di http://localhost:8000/docs.
+
+Docker:
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose down
+```
+
+Layanan `streamlit` baru dijalankan setelah `fastapi` sehat (healthcheck ke `/docs`). Folder
+`data/` di-mount read-only, container berjalan sebagai user `app`, dan secret dibaca dari
+`.env`. Untuk memeriksa konfigurasi pakai `docker compose config --quiet`: tanpa `--quiet`,
+isi `.env` ikut tercetak.
+
+## Perintah
 
 | Perintah | Fungsi | Butuh API key |
 |---|---|---|
-| `make run` | Jalankan Streamlit | ya |
-| `make test` | Unit test dengan LLM palsu | tidak |
-| `make lint` | Ruff untuk agent, repository, model, dan test | tidak |
-| `make sample-sql` | Cek validasi dan eksekusi SQL ke database asli | tidak |
-| `make sample-sql-llm` | Smoke test SQL agent dengan LLM sungguhan | ya |
-| `make sample-rag` | Retrieval ke Qdrant asli: skor, threshold, filter lokasi | ya (embedding saja) |
-| `make sample-rag-llm` | Smoke test RAG agent: jawaban, sitasi, relevansi ID dikutip | ya |
-| `make sample-supervisor` | Smoke test routing supervisor dan pertanyaan lanjutan | ya |
-| `make supervisor-graph` | Cetak diagram graph supervisor (Mermaid) | tidak |
+| `make run` | Streamlit | ya |
+| `make api` | FastAPI untuk halaman Asisten | ya |
+| `make test` | Unit test dengan LLM dan vector store palsu | tidak |
+| `make lint` | Ruff untuk `src` dan `tests` | tidak |
+| `make eval` | Set eval Asisten tanpa CV (`tests/eval/queries.yaml`) | ya |
+| `make eval-cv-chat` | Set eval Asisten dengan CV aktif (`tests/eval/cv_chat_cases.yaml`) | ya |
+| `make eval-cv` | Set eval Cocokkan CV pada 5 CV fiktif (`tests/eval/cv_cases.yaml`) | ya |
+| `make sample-cv ARGS=path/cv.pdf` | Ekstraksi profil dari CV sendiri, hanya angka yang dicetak | ya |
+| `make sample-plan` | Metrik rencana belajar Skill Gap | ya |
+| `make sample-letter` | Metrik surat lamaran (skill dan angka yang dikarang) | ya |
+| `make seed-all` | Bersihkan dataset, isi SQLite dan Qdrant | ya |
 
-## Struktur agent
+Argumen eval lewat `ARGS`, misalnya `make eval ARGS="--label coba --only T3"`. Hasil eval
+disimpan di `tests/eval/results/` (tidak di-track). `make eval-cv ARGS="--rescore <file>.json"`
+menghitung ulang metrik dari kandidat tersimpan tanpa API.
 
-| File | Isi |
+## Arsitektur
+
+```
+Streamlit (src/app.py, src/pages, src/components)
+  └─ Asisten ─ POST /chat-assistant ─> FastAPI (src/api.py, src/routes)
+                                         └─ SupervisorAgent (src/agents/supervisor_agent_graph.py)
+                                              planner -> penjaga rute -> maks 3 worker paralel -> synthesize
+                                              worker: rag | sql | cv_match | cv_gap | cv_role
+```
+
+| Folder | Isi |
 |---|---|
-| `src/models/agent.py` | `AgentResult` dan `LLMUsage`: bentuk output semua agent |
-| `src/agents/prompts.py` | Semua prompt dan pesan tetap, tanpa logika |
-| `src/repositories/job_repository.py` | Koneksi SQLite read-only |
-| `src/agents/sql_agent.py` | SQL agent: pertanyaan statistik |
-| `src/agents/rag_agent.py` | RAG agent: pencarian lowongan dengan sitasi `[ID:x]` |
-| `src/agents/supervisor_agent.py` | Supervisor LangGraph: router + memanggil agent |
-| `src/agents/*_sample.py` | Smoke test manual terhadap data dan LLM asli |
-| `src/components/assistant_chat.py` | Halaman chat Asisten Karier (memanggil `run_supervisor`) |
-| `src/components/job_description.py` | Merapikan deskripsi lowongan ke bagian baku, tanpa LLM |
+| `src/agents` | `SupervisorAgent`, `RagAgent`, `SqlAgent`, `cv_agent` (tanpa LLM), dan semua prompt di `prompts.py` |
+| `src/cv` | PDF ke teks, profil CV, kontak (regex), pencocokan, skill gap, rencana belajar, surat lamaran |
+| `src/repositories` | `JobRepository` (SQLite read-only + Qdrant) dan pencarian halaman Cari Lowongan |
+| `src/containers.py` | Composition root: `get_job_repository()` dan `get_supervisor_agent()` |
+| `src/config` | Model LLM, embedding, dan koneksi database dari `.env` |
+| `src/evaluation` | Runner tiga set eval dan pemeriksa jawaban |
+| `src/models` | `AgentResult` dan `LLMUsage` (token per panggilan LLM) |
+| `scripts` | Pembersihan dataset dan seeding SQLite/Qdrant |
 
-Nama file Python wajib memakai underscore (`job_repository.py`), bukan titik, agar bisa di-import.
+Body `POST /chat-assistant`: `history` (daftar pesan), `user_message`, dan `cv` opsional
+`{"profile": CVProfile, "matches": MatchResult}`. Respons: `{"result": AgentResult}`.
 
-## Supervisor (pintu masuk UI)
+Aturan agent:
 
-UI cukup memanggil satu fungsi. Riwayat chat dikirim apa adanya dari
-`st.session_state`, **tanpa** pertanyaan saat ini.
+- SQL hanya satu `SELECT`/`WITH` lewat koneksi read-only; perintah tulis ditolak dan query tanpa
+  `LIMIT` diberi `LIMIT`.
+- RAG hanya boleh mengutip lowongan kandidat dengan format `[ID:x]`; ID lain dibuang.
+- Worker CV tidak memanggil LLM; `cv_role` memakai 1 embedding nama posisi.
+- Agent tidak melempar exception: kegagalan menjadi pesan aman di `answer` dan detail di `error`.
 
-```python
-import os
+## Data CV
 
-from src.config.database import VECTOR_DB
-from src.config.llm import LLM_MODEL
-from src.agents.supervisor_agent import run_supervisor
-
-DB_PATH = os.getenv("DB_SQLITE_PATH", "./data/database.sqlite")
-
-result = run_supervisor(
-    "Kalau yang di Surabaya?",
-    llm=LLM_MODEL,
-    vector_store=VECTOR_DB,
-    db_path=DB_PATH,
-    history=[
-        {"role": "user", "content": "Lowongan data analyst di Jakarta"},
-        {"role": "assistant", "content": "Ada 3 lowongan ..."},
-    ],
-)
-```
-
-Graph LangGraph (`make supervisor-graph`):
-
-```
-START -> router -> sql_agent | rag_agent | general -> finalize -> END
-```
-
-| Node | Isi | Panggilan LLM |
-|---|---|---|
-| `router` | Structured output: pilih rute + tulis ulang pertanyaan lanjutan jadi mandiri | 1 |
-| `sql_agent` | `run_sql_agent` | 1-3 |
-| `rag_agent` | `run_rag_agent` | 0-1 |
-| `general` | Pesan tetap untuk sapaan / di luar topik | 0 |
-| `finalize` | Jumlahkan token router + agent, gabungkan error | 0 |
-
-Jawaban agent diteruskan apa adanya, tidak dirangkum ulang oleh LLM supervisor,
-agar angka SQL dan sitasi `[ID:x]` tidak berubah. Jika router gagal, pertanyaan
-diteruskan ke RAG (lihat `FALLBACK_ROUTE`).
-
-## Kontrak agent
-
-Setiap agent adalah satu fungsi biasa; agent tidak tahu apa-apa tentang LangGraph state.
-
-```python
-result = run_sql_agent(question, llm=LLM_MODEL, db_path=DB_PATH)
-result = run_rag_agent(question, llm=LLM_MODEL, vector_store=VECTOR_DB, db_path=DB_PATH)
-```
-
-Aturan yang dijamin oleh setiap `run_*` (termasuk `run_supervisor`):
-
-1. **Input**: `run_*_agent` menerima satu pertanyaan *mandiri* (`str`). Pertanyaan
-   lanjutan ditulis ulang oleh router supervisor.
-2. **Dependency disuntikkan**: `llm`, `vector_store`, dan `db_path` dikirim lewat
-   parameter, sehingga test bisa memakai LLM palsu.
-3. **Tidak pernah melempar exception.** Jika gagal, `answer` berisi pesan tetap
-   yang aman ditampilkan ke user dan `error` berisi detail teknis untuk log.
-4. **Output** selalu `AgentResult`:
-
-| Field | Isi |
-|---|---|
-| `answer` | Teks untuk ditampilkan ke user |
-| `source` | `"sql"`, `"rag"`, atau `"general"` (pesan tetap supervisor) |
-| `job_ids` | ID lowongan terkait (untuk kartu lowongan di UI). SQL: hanya terisi jika query memilih kolom `id` |
-| `rows` | RAG: dict lowongan yang dikutip (kolom `jobs` + `score`, `matched_chunk`). SQL: baris hasil query dengan kolom bebas, bisa agregat tanpa `id`. UI wajib cek `source` sebelum menampilkan |
-| `sql` | Query yang dieksekusi (SQL agent saja) |
-| `usage` | Total `llm_calls`, `input_tokens`, `output_tokens`, `total_tokens`, plus `calls`: rincian per panggilan (langkah, model, token) |
-| `error` | `None` jika sukses |
-
-Jumlah panggilan LLM SQL agent: 2 normal, 3 jika retry, 1 jika hasil kosong
-atau pertanyaan tidak relevan (misalnya permintaan menghapus data).
-
-RAG agent:
-
-- Retrieval tanpa LLM chat: filter lokasi dari kamus kolom `location`,
-  threshold skor 0,45 (hanya untuk pertanyaan tanpa lokasi), top 5 lowongan.
-- Tanpa kandidat: pesan tetap, 0 panggilan LLM. Ada kandidat: 1 panggilan LLM.
-- **Guard sitasi**: `job_ids` dan `rows` hanya berisi ID yang dikutip jawaban
-  (`[ID:x]`) DAN ada di kandidat. ID lain dibuang dan dicatat di `error`.
-- `retrieve_jobs` dan `answer_from_jobs` bisa dipakai terpisah (misalnya untuk
-  fitur Cocokkan CV).
+Teks CV hanya hidup selama ekstraksi. Profil disimpan di `st.session_state`, tidak ditulis ke
+disk, log, atau hasil eval. Nama dan kontak tidak masuk prompt LLM mana pun (dijaga
+`tests/test_cv_contacts.py`). Body API Asisten hanya berisi profil ringkas dan hasil
+Cocokkan CV, dan tidak di-log.
