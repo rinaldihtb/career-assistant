@@ -127,6 +127,12 @@ def test_title_phrase_ranks_before_title_words_company_and_description():
     assert ids(search_jobs(listings, JobFilters(keyword="data analyst"))) == [3, 2, 4, 1]
 
 
+def test_numeric_keyword_is_job_id(listings):
+    assert ids(search_jobs(listings, JobFilters(keyword=" 5 "))) == [5]
+    assert search_jobs(listings, JobFilters(keyword="5", province="Jakarta Raya")) == []
+    assert search_jobs(listings, JobFilters(keyword="999")) == []
+
+
 def test_without_keyword_keeps_id_order(listings):
     assert ids(search_jobs(listings, JobFilters())) == [1, 2, 3, 4, 5, 6]
 

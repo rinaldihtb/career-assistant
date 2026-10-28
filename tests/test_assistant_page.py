@@ -360,7 +360,7 @@ def test_split_rag_answer_keeps_paragraph_after_skill_list():
 
     intro, notes = split_rag_answer(role_answer("Finance Analyst", matches).answer)
 
-    assert "- Excel: 2 dari 2 lowongan\n\nSkill CV-mu yang sudah diminta" in intro
+    assert "- Excel: 2 dari 2 lowongan (ID 1, 2)\n\nSkill CV-mu yang sudah diminta" in intro
     assert "\n\n\n" not in intro
     assert set(notes) == {1, 2}
 

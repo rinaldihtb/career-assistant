@@ -150,10 +150,10 @@ def test_bars_show_gap_then_owned_skills_without_llm(plans):
 
     assert not app.exception
     assert _bars(app) == [
-        "Power BI · 2 dari 2",
-        "dbt · 1 dari 2",
-        "SQL · 2 dari 2",
-        "Excel · 1 dari 2",
+        "Power BI · 2 dari 2 · ID 1, 2",
+        "dbt · 1 dari 2 · ID 1",
+        "SQL · 2 dari 2 · ID 1, 2",
+        "Excel · 1 dari 2 · ID 1",
     ]
     assert [element.proto.value for element in app.get("progress")][:2] == [100, 50]
     assert gap_caption(compute_skill_gap(MATCHES.matches)) in _captions(app)

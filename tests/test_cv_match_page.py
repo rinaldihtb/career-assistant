@@ -324,10 +324,10 @@ def test_score_formula_follows_config_weight():
 def test_match_meta_skips_empty_parts():
     assert match_meta(job(1, 0.8)) == (
         "PT Alpha · Jakarta Selatan, Jakarta Raya (Hibrid) · Full time · "
-        "Rp8.000.000 - Rp10.000.000 per bulan"
+        "Rp8.000.000 - Rp10.000.000 per bulan · ID 1"
     )
     bare = job(2, 0.5, company_name=None, location=None, salary_min=None, salary_max=None)
-    assert match_meta(bare) == "Full time"
+    assert match_meta(bare) == "Full time · ID 2"
 
 
 def test_skill_chips_limit_and_escape():

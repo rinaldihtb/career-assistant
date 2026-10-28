@@ -391,14 +391,17 @@ def score_formula(config: MatchConfig | None = None) -> str:
 
 
 def match_meta(match: JobMatch) -> str:
-    """Baris "perusahaan · lokasi · tipe kerja · gaji"; bagian yang kosong dilewati."""
+    """Baris "perusahaan · lokasi · tipe kerja · gaji · ID"; bagian yang kosong dilewati.
+
+    ID sama dengan rujukan skill di Skill Gap dan Asisten, dan bisa dicari di Cari Lowongan.
+    """
     location = " ".join((match.location or "").split())
     salary = (
         format_salary(match.salary_min, match.salary_max)
         if match.salary_min or match.salary_max
         else None
     )
-    parts = (match.company_name, location, match.work_type, salary)
+    parts = (match.company_name, location, match.work_type, salary, f"ID {match.job_id}")
     return " · ".join(part for part in parts if part)
 
 

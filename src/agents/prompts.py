@@ -394,7 +394,7 @@ CV_GAP_INTRO = (
     "Dari {jobs} lowongan yang paling cocok dengan CV-mu, skill yang paling sering diminta "
     "dan belum ada di CV:"
 )
-CV_GAP_LINE = "- {name}: {count} dari {jobs} lowongan"
+CV_GAP_LINE = "- {name}: {count} dari {jobs} lowongan (ID {ids})"
 CV_GAP_NONE = "Semua skill yang disebut {jobs} lowongan teratasmu sudah ada di CV-mu."
 CV_GAP_HAVE = "Skill CV-mu yang paling sering diminta: {skills}."
 CV_GAP_PLAN = "Rencana belajar 4 minggu dari skill gap ini bisa dibuat di halaman Skill Gap."

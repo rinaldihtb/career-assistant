@@ -42,6 +42,7 @@ def test_missing_ordered_by_job_count_then_job_score():
         ("Looker Studio", 1),
     ]
     assert gap.missing[0].score_sum == 0.85 + 0.80
+    assert [count.job_ids for count in gap.missing] == [(1, 2), (1,), (2,), (3,)]
 
 
 def test_have_counts_matched_skills():

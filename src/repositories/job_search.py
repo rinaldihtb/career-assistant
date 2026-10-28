@@ -167,8 +167,12 @@ def search_jobs(listings: Sequence[JobListing], filters: JobFilters) -> list[Job
     diurutkan: frasa utuh di judul, lalu jumlah kata kunci di judul, lalu di nama perusahaan,
     lalu ID. Tanpa kata kunci, urutan ID. Filter gaji hanya meloloskan lowongan yang
     mencantumkan gaji dengan batas atas (atau batas bawah jika hanya itu) minimal
-    ``min_salary``.
+    ``min_salary``. Kata kunci berupa angka saja dibaca sebagai ID lowongan, rujukan "ID 14"
+    di Cocokkan CV, Skill Gap, dan Asisten.
     """
+    if filters.keyword.strip().isdigit():
+        job_id = int(filters.keyword)
+        return [job for job in listings if job.id == job_id and _passes_filters(job, filters)]
     terms = keyword_terms(filters.keyword)
     patterns = [term_pattern(term) for term in terms]
     results = [

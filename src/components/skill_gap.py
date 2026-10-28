@@ -164,8 +164,11 @@ def cached_plan(state: dict[str, Any]) -> LearningPlanResult | None:
 
 
 def count_label(skill: SkillCount, jobs: int) -> str:
-    """Teks bar, misalnya "Power BI · 7 dari 10"."""
-    return f"{escape_markdown(skill.name)} · {skill.jobs} dari {jobs}"
+    """Teks bar, misalnya "Power BI · 7 dari 10 · ID 14, 43" (ID lowongan sebagai rujukan)."""
+    label = f"{escape_markdown(skill.name)} · {skill.jobs} dari {jobs}"
+    if skill.job_ids:
+        label += " · ID " + ", ".join(str(job_id) for job_id in skill.job_ids)
+    return label
 
 
 def gap_caption(gap: SkillGap) -> str:

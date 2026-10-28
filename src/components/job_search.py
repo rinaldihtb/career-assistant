@@ -112,7 +112,7 @@ def _render_form(listings: tuple[JobListing, ...], state: dict[str, Any]) -> Non
         keyword = keyword_column.text_input(
             "Kata kunci",
             key=KEYWORD_KEY,
-            placeholder="Posisi, perusahaan, kota, atau skill",
+            placeholder="Posisi, perusahaan, kota, skill, atau ID lowongan",
             max_chars=100,
         )
         submitted = button_column.form_submit_button("Cari", type="primary", width="stretch")

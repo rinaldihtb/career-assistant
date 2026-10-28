@@ -118,8 +118,8 @@ def test_gap_counts_missing_and_owned_skills():
     assert result.answer == (
         "Dari 2 lowongan yang paling cocok dengan CV-mu, skill yang paling sering diminta "
         "dan belum ada di CV:\n"
-        "- Power BI: 2 dari 2 lowongan\n"
-        "- dbt: 1 dari 2 lowongan\n\n"
+        "- Power BI: 2 dari 2 lowongan (ID 1, 2)\n"
+        "- dbt: 1 dari 2 lowongan (ID 1)\n\n"
         "Skill CV-mu yang paling sering diminta: SQL (2 dari 2), Excel (1 dari 2).\n\n"
         f"{CV_GAP_PLAN}"
     )

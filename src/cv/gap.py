@@ -34,11 +34,13 @@ class SkillCount:
         name: Nama skill (nama kosakata, atau skill CV di luar kosakata untuk ``have``).
         jobs: Jumlah lowongan yang menyebut skill ini.
         score_sum: Total skor lowongan tersebut, pemecah seri.
+        job_ids: ID lowongan yang menyebutnya, urut skor; rujukan angka "x dari N".
     """
 
     name: str
     jobs: int
     score_sum: float
+    job_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,8 +74,8 @@ def compute_skill_gap(matches: Sequence[JobMatch], *, limit: int = GAP_LIMIT) ->
     Returns:
         ``SkillGap``; daftar kosong jika ``matches`` kosong.
     """
-    missing = _count((match.missing_skills, match.score) for match in matches)
-    have = _count((match.matched_skills, match.score) for match in matches)
+    missing = _count((match.missing_skills, match.score, match.job_id) for match in matches)
+    have = _count((match.matched_skills, match.score, match.job_id) for match in matches)
     return SkillGap(
         missing=tuple(missing[:limit]),
         have=tuple(have[:limit]),
@@ -84,13 +86,16 @@ def compute_skill_gap(matches: Sequence[JobMatch], *, limit: int = GAP_LIMIT) ->
     )
 
 
-def _count(rows: Iterable[tuple[list[str], float]]) -> list[SkillCount]:
-    jobs: dict[str, int] = {}
+def _count(rows: Iterable[tuple[list[str], float, int]]) -> list[SkillCount]:
+    ids: dict[str, list[int]] = {}
     scores: dict[str, float] = {}
-    for skills, score in rows:
+    for skills, score, job_id in rows:
         for name in dict.fromkeys(skills):  # satu lowongan dihitung sekali per skill
-            jobs[name] = jobs.get(name, 0) + 1
+            ids.setdefault(name, []).append(job_id)
             scores[name] = scores.get(name, 0.0) + score
-    first_seen = {name: index for index, name in enumerate(jobs)}
-    ordered = sorted(jobs, key=lambda name: (-jobs[name], -scores[name], first_seen[name]))
-    return [SkillCount(name=name, jobs=jobs[name], score_sum=scores[name]) for name in ordered]
+    first_seen = {name: index for index, name in enumerate(ids)}
+    ordered = sorted(ids, key=lambda name: (-len(ids[name]), -scores[name], first_seen[name]))
+    return [
+        SkillCount(name=name, jobs=len(ids[name]), score_sum=scores[name], job_ids=tuple(ids[name]))
+        for name in ordered
+    ]

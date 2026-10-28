@@ -41,7 +41,7 @@ from src.agents.prompts import (
     CV_SOURCE,
     CV_SOURCE_WITH_LABEL,
 )
-from src.cv.gap import compute_skill_gap
+from src.cv.gap import SkillCount, compute_skill_gap
 from src.cv.match import JobMatch, MatchConfig, MatchResult
 from src.cv.profile import CVProfile
 from src.models.agent import AgentResult
@@ -133,10 +133,7 @@ def gap_answer(matches: list[JobMatch]) -> str:
         parts = [CV_GAP_NONE.format(jobs=gap.jobs)]
     else:
         lines = [CV_GAP_INTRO.format(jobs=gap.jobs)]
-        lines += [
-            CV_GAP_LINE.format(name=skill.name, count=skill.jobs, jobs=gap.jobs)
-            for skill in gap.missing
-        ]
+        lines += [_gap_line(skill, gap.jobs) for skill in gap.missing]
         parts = ["\n".join(lines)]
     if gap.have:
         have = ", ".join(
@@ -146,6 +143,12 @@ def gap_answer(matches: list[JobMatch]) -> str:
     if gap.missing:
         parts.append(CV_GAP_PLAN)
     return "\n\n".join(parts)
+
+
+def _gap_line(skill: SkillCount, jobs: int) -> str:
+    """Satu baris skill kurang beserta ID lowongan yang menyebutnya sebagai rujukan."""
+    ids = ", ".join(str(job_id) for job_id in skill.job_ids)
+    return CV_GAP_LINE.format(name=skill.name, count=skill.jobs, jobs=jobs, ids=ids)
 
 
 def role_answer(role: str, matches: MatchResult | None) -> AgentResult:
@@ -163,10 +166,7 @@ def role_answer(role: str, matches: MatchResult | None) -> AgentResult:
     gap = compute_skill_gap(matches.matches, limit=CV_GAP_LIMIT)
     if gap.missing:
         lines = [CV_ROLE_GAP_INTRO.format(role=role, jobs=gap.jobs)]
-        lines += [
-            CV_GAP_LINE.format(name=skill.name, count=skill.jobs, jobs=gap.jobs)
-            for skill in gap.missing
-        ]
+        lines += [_gap_line(skill, gap.jobs) for skill in gap.missing]
         parts = ["\n".join(lines)]
     else:
         parts = [CV_ROLE_GAP_NONE.format(role=role, jobs=gap.jobs)]
