@@ -63,7 +63,7 @@ RAG_RESULT = AgentResult(
         calls=[
             LLMCall(step="planner", model="gpt-4o-mini-2024-07-18", input_tokens=550,
                     output_tokens=30, total_tokens=580),
-            LLMCall(step="rag_answer", model="gpt-4o-mini-2024-07-18", input_tokens=1600,
+            LLMCall(step="rag", model="gpt-4o-mini-2024-07-18", input_tokens=1600,
                     output_tokens=220, total_tokens=1820),
         ],
     ),
@@ -190,10 +190,10 @@ def test_llm_usage_detail_per_call(calls):
     usage_table = app.dataframe[-1].value.to_dict("records")
     assert [row["Langkah"] for row in usage_table] == [
         "Planner: pecah pertanyaan",
-        "RAG: jawab dari kandidat",
+        "RAG: cari dan jawab dari kandidat",
     ]
     assert usage_table[1] == {
-        "Langkah": "RAG: jawab dari kandidat",
+        "Langkah": "RAG: cari dan jawab dari kandidat",
         "Model": "gpt-4o-mini-2024-07-18",
         "Token masuk": 1600,
         "Token keluar": 220,

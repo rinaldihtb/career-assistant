@@ -79,8 +79,9 @@ STEP_LABELS = {
     "planner": "Planner: pecah pertanyaan",
     "sql_generate": "SQL: tulis query",
     "sql_retry": "SQL: perbaiki query",
-    "sql_answer": "SQL: rangkum hasil",
-    "rag_answer": "RAG: jawab dari kandidat",
+    "sql": "SQL: panggil tool dan rangkum hasil",
+    "rag": "RAG: cari dan jawab dari kandidat",
+    "chat": "Pesan umum",
 }
 # Label catatan di kartu: alasan relevansi (RAG), fakta dari query (SQL, misalnya gaji), atau
 # skor dan skill yang cocok (CV).

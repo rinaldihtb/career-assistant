@@ -648,6 +648,29 @@ def test_cv_role_for_own_role_becomes_out_of_scope(make_repository):
     assert state["result"].answer == "Mau pindah ke bidang apa?"
 
 
+def test_cv_match_with_city_next_to_sql_becomes_rag(make_repository):
+    salary = "Berapa rata-rata gaji minimum dan maksimum lowongan di Jakarta?"
+    rag_question = "Lowongan yang paling cocok untuk Data Analyst di Jakarta"
+    llm = ScriptedLLM(
+        reply=agent_script(
+            plan=plan_reply(
+                ("sql", salary),
+                ("cv_match", "Lowongan yang paling cocok dengan CV-ku di Jakarta"),
+                schema="CVPlan",
+            ),
+            sql={salary: COUNT_SQL},
+            answers={salary: "Ada 2.", rag_question: "Tidak ada."},
+        )
+    )
+    question = "gaji rata-rata di jakarta, dan lowongan yang cocok untuk saya di jakarta"
+    state = _invoke(llm, make_repository(CHUNKS), question, **CV)
+
+    assert state["subtasks"] == [
+        {"agent": "sql", "question": salary},
+        {"agent": "rag", "question": rag_question},
+    ]
+
+
 @pytest.mark.parametrize(
     ("second", "agents"),
     [

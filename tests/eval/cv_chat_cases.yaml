@@ -45,6 +45,8 @@
 #    Pesan yang isinya persis judul lowongan ("General Ledger Specialist") -> rag untuk judul
 #    itu tanpa planner; lewat planner jawabannya out_of_scope atau cv_role (0 dari 8 run benar).
 #    Setelah jawaban yang menampilkan lowongan berjudul sama, sql dengan ID-nya juga sah.
+#    C3-06: "yang cocok untukku" + kota di samping permintaan lain tetap rag (K3), karena
+#    cv_match tidak bisa memfilter kota.
 #
 # FORMAT KASUS
 # id, category, cv (cv01..cv05, atau null = tanpa CV), question, history (opsional)
@@ -165,6 +167,14 @@ cases:
       standalone_all:
         - [financial, finance, keuangan]
         - [di luar jakarta, selain jakarta, kecuali jakarta]
+
+  - id: C3-06
+    category: C3
+    cv: cv01
+    question: gaji rata-rata di jakarta, dan lowongan yang cocok untuk saya di jakarta.
+    expected: {agents: [sql, rag]}
+    checks:
+      standalone_all: [[data analyst, data analis, analis data], [jakarta]]
 
   # --- C4: statistik untuk posisi tujuan -> sql (K3) --------------------------
   - id: C4-01

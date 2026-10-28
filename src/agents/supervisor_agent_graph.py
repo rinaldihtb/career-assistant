@@ -562,6 +562,10 @@ class SupervisorAgent:
           akuntan ditambah lowongan posisi CV yang tidak diminta (C11-01).
         - ``cv_match`` di samping ``rag`` yang sudah memuat posisi tujuan profil dan lokasi dibuang:
           ``rag`` itu sudah jawaban personal dengan kota (C3-03, 3 dari 3 run).
+        - ``cv_match`` yang pertanyaan sub-tugasnya menyebut lokasi diganti ``rag`` dengan
+          pertanyaan itu, rujukan dirinya diganti posisi tujuan. Berlaku juga di samping sub-tugas
+          lain: "gaji rata-rata di Jakarta dan lowongan yang cocok untukku di Jakarta" dijawab
+          ``sql`` + ``cv_match`` yang menampilkan lowongan Bali (C3-06).
         - Sub-tugas ``cv_role`` dirapikan oleh ``align_role_subtasks``. Pertanyaan pindah karier
           tanpa ``cv_role`` yang hanya dijawab ``cv_match``/``cv_gap`` dikosongkan, sehingga
           planner membalas lewat out_of_scope yang menanyakan bidang tujuan (C13-01).
@@ -583,6 +587,14 @@ class SupervisorAgent:
         ):
             aligned = [task for task in aligned if task["agent"] != "cv_match"]
             agents.discard("cv_match")
+        role = profile_role(profile)
+        aligned = [
+            {"agent": "rag", "question": replace_self_references(task["question"], role)}
+            if task["agent"] == "cv_match" and self._mentions_place(task["question"], default=False)
+            else task
+            for task in aligned
+        ]
+        agents = {task["agent"] for task in aligned}
         if agents and agents <= {"cv_match", "cv_gap"} and _CAREER_SWITCH.search(question):
             return []
         if (
@@ -592,7 +604,7 @@ class SupervisorAgent:
             or not self._mentions_place(question, default=False)
         ):
             return aligned
-        rag = {"agent": "rag", "question": replace_self_references(question, profile_role(profile))}
+        rag = {"agent": "rag", "question": replace_self_references(question, role)}
         return [rag if task["agent"] == "cv_match" else task for task in aligned]
 
     def align_role_subtasks(
