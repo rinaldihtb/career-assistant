@@ -7,11 +7,12 @@ services:
     environment:
       - ASSISTANT_API_URL=http://fastapi:8000
     depends_on:
-      - fastapi
+      fastapi:
+        condition: service_healthy
     ports:
       - "8501:8501"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:ro
 
   fastapi:
     build: .
@@ -21,4 +22,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data:ro
+    healthcheck:
+      test: python -c "import urllib.request as u; u.urlopen('http://localhost:8000/docs')"
+      interval: 10s
+      start_period: 30s

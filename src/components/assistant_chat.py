@@ -24,7 +24,7 @@ import streamlit as st
 from src.agents.cv_agent import profile_label
 from src.components.job_description import description_to_markdown, escape_markdown
 from src.components.navigation import CV_PAGE
-from src.containers import get_job_repository, get_supervisor_agent
+from src.containers import get_job_repository
 from src.cv.ingest import CV_STATE_KEY
 from src.helpers.format import format_salary
 from src.models.agent import AgentResult
@@ -57,10 +57,6 @@ CV_BANNER = (
 # Field profil yang dibaca planner (``format_profile``) dan agent CV (``profile_label``).
 CV_PROFILE_FIELDS = frozenset(
     {"target_role", "experience_months", "education_level", "education_major", "skills"}
-)
-DEPENDENCY_ERROR = (
-    "Asisten belum bisa dijalankan karena konfigurasi LLM atau Qdrant belum lengkap. "
-    "Periksa file .env."
 )
 API_ERROR = "Asisten belum bisa dihubungi. Silakan coba lagi."
 # Alamat FastAPI dibaca dari env saat dipanggil: docker-compose mengisinya dengan nama
@@ -111,13 +107,6 @@ def render_assistant_page() -> None:
     """Render halaman chat lengkap: riwayat, contoh pertanyaan, dan input."""
     st.markdown("## Asisten Karier")
     st.caption("Tanyakan lowongan atau statistik lowongan dari data kami.")
-
-    try:
-        get_supervisor_agent()
-    except Exception:  # konfigurasi .env belum lengkap: tampilkan pesan, bukan traceback
-        logger.exception("Gagal membuat supervisor agent")
-        st.error(DEPENDENCY_ERROR)
-        return
 
     cv: dict[str, Any] | None = st.session_state.get(CV_STATE_KEY)
     _render_cv_banner(cv)

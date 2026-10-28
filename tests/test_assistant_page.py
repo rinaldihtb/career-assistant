@@ -19,7 +19,6 @@ from src.components.assistant_chat import (
     API_ERROR,
     CV_EXAMPLE_QUESTIONS,
     CV_PROFILE_FIELDS,
-    DEPENDENCY_ERROR,
     EXAMPLE_QUESTIONS,
     MESSAGES_KEY,
     NO_CV_BANNER,
@@ -113,10 +112,9 @@ class FakeResponse:
 
 
 def _use(monkeypatch, *results: AgentResult, repository=None) -> FakeGraph:
-    """Pasang graph palsu di UI dan route, lalu arahkan ``requests.post`` ke handler route."""
+    """Pasang graph palsu di route, lalu arahkan ``requests.post`` ke handler route."""
     graph = FakeGraph(*results)
     agent = SimpleNamespace(graph=graph)
-    monkeypatch.setattr(assistant_chat, "get_supervisor_agent", lambda: agent)
     monkeypatch.setattr(routes, "get_supervisor_agent", lambda: agent)
 
     def post(url, *, json, timeout):
@@ -256,16 +254,15 @@ def test_new_conversation_clears_history(calls):
     assert len(app.chat_message) == 0
 
 
-def test_missing_config_shows_error_instead_of_crash(monkeypatch):
+def test_page_does_not_build_supervisor(monkeypatch):
     def broken():
         raise KeyError("QDRANT_URL")
 
-    monkeypatch.setattr(assistant_chat, "get_supervisor_agent", broken)
+    monkeypatch.setattr(routes, "get_supervisor_agent", broken)
     app = _app()
 
     assert not app.exception
-    assert app.error[0].value == DEPENDENCY_ERROR
-    assert len(app.chat_input) == 0
+    assert len(app.chat_input) == 1
 
 
 def test_api_url_comes_from_env(monkeypatch):
