@@ -28,6 +28,7 @@ from src.components.cv_match import (
     skill_lines,
     usage_caption,
 )
+from src.components.job_search import PAGE_TITLE as JOB_SEARCH_TITLE
 from src.cv.ingest import CV_STATE_KEY, IngestResult
 from src.cv.match import JobMatch, MatchConfig, MatchResult
 from src.cv.profile import CVProfile, Experience
@@ -287,6 +288,16 @@ def test_page_is_registered_and_sidebar_shows_cv_status(calls):
     app.session_state[CV_STATE_KEY] = state()
     app.run()
     assert [caption.value for caption in app.sidebar.caption] == ["CV aktif: cv_budi.pdf"]
+
+
+def test_browse_without_cv_opens_job_search(calls):
+    app = AppTest.from_file(str(APP_PATH), default_timeout=APP_TIMEOUT)
+    app.run()
+    app.switch_page("pages/cvmatch_page.py").run()
+    app.button(key="cv_browse").click().run()
+
+    assert not app.exception
+    assert app.markdown[0].value == JOB_SEARCH_TITLE
 
 
 # --- Helper tanpa Streamlit --------------------------------------------------

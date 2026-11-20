@@ -107,7 +107,7 @@ def render_cv_match_page() -> None:
         if state is None:
             st.info(EMPTY_RESULTS)
             if st.button("Cari lowongan tanpa CV", key="cv_browse"):
-                st.switch_page("pages/jobsearch.page.py")
+                st.switch_page("pages/jobsearch_page.py")
         else:
             _render_results(state)
 
