@@ -1,0 +1,48 @@
+# Tema bisakerja. Nilai warna sama dengan token di docs/brand.md dan src/components/brand.py.
+
+[server]
+# Melayani src/static/ di URL app/static/ untuk font yang di-host sendiri.
+enableStaticServing = true
+
+[theme]
+font = "Plus Jakarta Sans, sans-serif"
+headingFont = "Fraunces, serif"
+
+[[theme.fontFaces]]
+family = "Plus Jakarta Sans"
+url = "app/static/fonts/PlusJakartaSans.woff2"
+weight = "200 800"
+
+[[theme.fontFaces]]
+family = "Fraunces"
+url = "app/static/fonts/Fraunces-Soft.woff2"
+weight = "500 800"
+
+# blueColor juga mewarnai st.info dan badge "blue", jadi disamakan dengan primary.
+[theme.light]
+primaryColor = "#0D6B6B"
+backgroundColor = "#FBF7EF"
+secondaryBackgroundColor = "#F1EADD"
+textColor = "#1B2424"
+borderColor = "#DDD2C0"
+linkColor = "#0D6B6B"
+blueColor = "#0D6B6B"
+blueTextColor = "#0D6B6B"
+greenColor = "#2E7D32"
+orangeColor = "#9A5B00"
+redColor = "#B3261E"
+
+# Tombol primary selalu bertuliskan putih, jadi primary dark bernada sedang;
+# link memakai teal yang lebih terang agar terbaca di latar gelap.
+[theme.dark]
+primaryColor = "#127B77"
+backgroundColor = "#141A1A"
+secondaryBackgroundColor = "#1E2626"
+textColor = "#EDE8DF"
+borderColor = "#34403F"
+linkColor = "#5CC8C2"
+blueColor = "#127B77"
+blueTextColor = "#5CC8C2"
+greenColor = "#7BC67E"
+orangeColor = "#F2B45C"
+redColor = "#FF8A80"
