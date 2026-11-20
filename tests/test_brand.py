@@ -9,7 +9,9 @@ from streamlit.testing.v1 import AppTest
 
 from src.components import brand
 
-CONFIG = Path(__file__).resolve().parents[1] / ".streamlit" / "config.toml"
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / ".streamlit" / "config.toml"
+APP_PATH = ROOT / "src" / "app.py"
 ASSETS = [
     brand.LOGO_WORDMARK,
     brand.LOGO_MARK,
@@ -106,3 +108,12 @@ def test_empty_state_action_renders_one_link():
 
     assert not app.exception
     assert [link.proto.label for link in app.get("page_link")] == ["Buka dokumentasi"]
+
+
+def test_sidebar_links_use_material_icons():
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30).run()
+
+    assert not app.exception
+    icons = [link.proto.icon for link in app.sidebar.get("page_link")]
+    assert len(icons) == 5
+    assert all(icon.startswith(":material/") for icon in icons)
