@@ -2,13 +2,16 @@
 
 import streamlit as st
 
+from src.components.brand import BANNER
+
+BANNER_ALT = "bisakerja, asisten karier dengan 473 lowongan 2025. Tahu jaraknya, kejar kerjanya."
+
 
 def render_hero() -> None:
     """Render the introductory section and primary call to action."""
     left_column, right_column = st.columns([3, 2], gap="large")
 
     with left_column:
-        st.markdown("### 💼 Career Assistant")
         st.title("Temukan langkah karier Anda berikutnya.")
         st.write(
             "Career Assistant membantu Anda menemukan lowongan relevan, "
@@ -28,5 +31,6 @@ def render_hero() -> None:
 
 def render_landing_page() -> None:
     """Compose a descriptive landing page without job-search content."""
-    st.markdown("# Career Assistant")
+    # Banner berisi label, wordmark, dan tagline; teks alternatifnya untuk pembaca layar.
+    st.image(str(BANNER), width="stretch", alt=BANNER_ALT)
     render_hero()
