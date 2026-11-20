@@ -22,7 +22,7 @@ ASSETS = [
     brand.ILLUSTRATION_SKILL_GAP,
     brand.ILLUSTRATION_CHAT,
 ]
-ILLUSTRATIONS = [path for path in ASSETS if path.suffix == ".svg"]
+ILLUSTRATIONS = [path for path in ASSETS if path.suffix == ".svg" and path != brand.BANNER]
 
 
 def _config() -> dict:
@@ -39,6 +39,12 @@ def test_brand_asset_exists(path):
 def test_illustration_is_valid_small_svg(path):
     ET.parse(path)
     assert path.stat().st_size < 15_000
+
+
+def test_banner_is_valid_svg_within_budget():
+    # Banner memuat wordmark dan teks sebagai path; batasnya lebih longgar agar huruf tetap tajam.
+    ET.parse(brand.BANNER)
+    assert brand.BANNER.stat().st_size < 25_000
 
 
 @pytest.mark.parametrize(("mode", "tokens"), [("light", brand.LIGHT), ("dark", brand.DARK)])
