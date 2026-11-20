@@ -14,12 +14,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Diimpor setelah PROJECT_ROOT masuk sys.path karena modulnya memakai import absolut src.*.
+from src.components.brand import FAVICON, LOGO_MARK, LOGO_WORDMARK
+
 st.set_page_config(
-    page_title="Career Assistant",
-    page_icon="💼",
+    page_title="bisakerja",
+    page_icon=str(FAVICON),
     layout="wide",
     initial_sidebar_state="locked",
 )
+# Wordmark di sidebar terbuka, logomark saat sidebar tertutup (layar sempit).
+st.logo(str(LOGO_WORDMARK), size="large", icon_image=str(LOGO_MARK))
 
 home_page = st.Page(
     "pages/home_page.py",
